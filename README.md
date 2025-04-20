@@ -200,7 +200,7 @@ void setup() {
   
   // Try to initialize SD without any parameters (for built-in SD slot)
   Serial.println("Initializing SD card...");
-  if (!SD.begin()) {
+  if (!SD.begin(BUILTIN_SDCARD)) {
     Serial.println("SD Card initialization failed!");
     tft.fillScreen(BG_COLOR);
     tft.setTextColor(TFT_RED);
