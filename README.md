@@ -199,29 +199,33 @@ void drawEnvelope(EnvelopeType envType) {
       }
     }
     if (!hasCurve) {
-      tft.drawLine(p1.x, p1.y, p2.x, p2.y, envColor);
-    } else {
-      int xDist = p2.x - p1.x;
-      int maxOffset = xDist / 2;
-      curveOffset = constrain(curveOffset, -maxOffset, maxOffset);
-      for (auto &c : env.curves) {
-        if (c.index == static_cast<int>(i) - 1) { // Fix signedness warning
-          c.offset = curveOffset;
-          break;
-        }
-      }
-      int cx = (p1.x + p2.x) / 2 + curveOffset;
-      int cy = (p1.y + p2.y) / 2;
-      for (int t = 0; t <= 20; t++) {
-        float u = t / 20.0;
-        float v = (t+1) / 20.0;
-        int x1 = (1-u)*(1-u)*p1.x + 2*(1-u)*u*cx + u*u*p2.x;
-        int y1 = (1-u)*(1-u)*p1.y + 2*(1-u)*u*cy + u*u*p2.y;
-        int x2 = (1-v)*(1-v)*p1.x + 2*(1-v)*v*cx + v*v*p2.x;
-        int y2 = (1-v)*(1-v)*p1.y + 2*(1-v)*v*cy + v*v*p2.y;
-        tft.drawLine(x1, y1, x2, y2, envColor);
-      }
+  tft.drawLine(p1.x, p1.y, p2.x, p2.y, envColor);
+} else {
+  int xDist = p2.x - p1.x;
+  int maxOffset = xDist / 2;
+  curveOffset = constrain(curveOffset, -maxOffset, maxOffset);
+  for (auto &c : env.curves) {
+    if (c.index == static_cast<int>(i) - 1) { // Fix signedness warning
+      c.offset = curveOffset;
+      break;
     }
+  }
+  
+  // Calculate control point based on curve offset
+  int cx = (p1.x + p2.x) / 2 + curveOffset;
+  int cy = (p1.y + p2.y) / 2;
+  
+  // Draw a smooth curve using more segments for better quality
+  for (int t = 0; t <= 30; t++) {
+    float u = t / 30.0;
+    float v = (t+1) / 30.0;
+    int x1 = (1-u)*(1-u)*p1.x + 2*(1-u)*u*cx + u*u*p2.x;
+    int y1 = (1-u)*(1-u)*p1.y + 2*(1-u)*u*cy + u*u*p2.y;
+    int x2 = (1-v)*(1-v)*p1.x + 2*(1-v)*v*cx + v*v*p2.x; 
+    int y2 = (1-v)*(1-v)*p1.y + 2*(1-v)*v*cy + v*v*p2.y;
+    tft.drawLine(x1, y1, x2, y2, envColor);
+  }
+}
   }
   for (size_t i = 0; i < env.points.size(); i++) {
     if (static_cast<int>(i) == selectedPoint && holdingPoint) { // Fix signedness warning
@@ -413,14 +417,48 @@ void processTouch() {
         removeLineOverlaps(); // Handles drag-over deletion
         drawUI();
       } else if (holdingCurve) {
-        for (auto &c : env.curves) {
-          if (c.index == selectedCurve) {
-            c.offset = px - (env.points[c.index].x + env.points[c.index + 1].x) / 2;
-            drawUI();
-            break;
-          }
-        }
-      } else {
+  for (auto &c : env.curves) {
+    if (c.index == selectedCurve) {
+      // Get the line's start and end points
+      int x1 = env.points[c.index].x;
+      int y1 = env.points[c.index].y;
+      int x2 = env.points[c.index + 1].x;
+      int y2 = env.points[c.index + 1].y;
+      
+      // Calculate the perpendicular distance from cursor to line
+      float dx = x2 - x1;
+      float dy = y2 - y1;
+      float lineLength = sqrt(dx*dx + dy*dy);
+      
+      // Project cursor onto the line
+      float t = constrain(((px - x1) * dx + (py - y1) * dy) / (dx*dx + dy*dy), 0.0f, 1.0f);
+      float projX = x1 + t * dx;
+      float projY = y1 + t * dy;
+      
+      // Calculate perpendicular vector
+      float perpX = px - projX;
+      float perpY = py - projY;
+      float perpLength = sqrt(perpX*perpX + perpY*perpY);
+      
+      // Calculate offset based on perpendicular distance and projection point
+      if (perpLength > 0) {
+        // Set offset based on cursor position relative to the line
+        // We want the peak of the curve to follow the cursor
+        int midPointX = (x1 + x2) / 2;
+        float offsetScale = 2.0f * (t - 0.5f);
+        c.offset = round(perpLength * (perpX / perpLength)) - ((projX - midPointX) * offsetScale);
+      }
+      
+      // Constrain offset to prevent extreme curves
+      int xDist = x2 - x1;
+      int maxOffset = xDist / 2;
+      c.offset = constrain(c.offset, -maxOffset, maxOffset);
+      
+      drawUI();
+      break;
+    }
+  }
+} else {
         int pointIndex = findNearbyPoint(px, py);
         if (pointIndex >= 0) {
           // Double-click detection
