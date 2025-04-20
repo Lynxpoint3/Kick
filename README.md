@@ -1,6 +1,3 @@
-﻿# Kick
- Code for a 4 enveloppes generator and patchs saves
-
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <Wire.h>
@@ -463,6 +460,9 @@ void processTouch() {
           drawUI();
           return;
         }
+        
+        // Add a point when clicking in empty space (not on a line or point)
+        // This code only executes if we didn't find a nearby point or line
         if (env.points.size() < MAX_POINTS) {
           bool tooClose = false;
           for (auto &pt : env.points) {
