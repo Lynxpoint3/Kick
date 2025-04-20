@@ -387,17 +387,23 @@ void drawTimeSlider() {
   tft.drawString("TIME:", TIME_SLIDER_X - 5, TIME_SLIDER_Y);
 }
 
-int findNearbyPoint(int x, int y, int radius) {
+int findNearbyPoint(int x, int y, int radius = POINT_RADIUS) {
   Envelope &env = envelopes[currentEnvelope];
+  int closestPoint = -1;
+  int minDistSq = radius * radius + 1; // Initialize with value just outside radius
+  
   for (size_t i = 0; i < env.points.size(); i++) {
     int dx = env.points[i].x - x;
     int dy = env.points[i].y - y;
-    if (dx*dx + dy*dy <= radius*radius) {
-      return i;
+    int distSq = dx*dx + dy*dy;
+    if (distSq <= radius*radius && distSq < minDistSq) {
+      minDistSq = distSq;
+      closestPoint = i;
     }
   }
-  return -1;
+  return closestPoint;
 }
+
 
 int findNearbyLine(int x, int y) {
   Envelope &env = envelopes[currentEnvelope];
@@ -1289,48 +1295,29 @@ if (tabIndex >= 0) {
           }
         }
       } else {
-        int pointIndex = findNearbyPoint(px, py);
-        if (pointIndex >= 0) {
-          // Double-click detection
-          if (pointIndex == lastClickedPoint && (now - lastClickTime) <= DOUBLE_CLICK_TIME) {
-            // Ensure we don't delete if there are only 2 points (minimum required)
-            if (env.points.size() > 2) {
-              env.points.erase(env.points.begin() + pointIndex);
-              lastClickedPoint = -1;
-              drawUI();
-            }
-            return;
-          }
-          
-          lastClickedPoint = pointIndex;
-          lastClickTime = now;
-          
-          selectedPoint = pointIndex;
-          holdingPoint = true;
-          holdStartTime = now;
-          drawUI();
-          return;
-        } 
-        // If not near a point with normal precision, check with larger radius for double-click only
-        else {
-          int doubleClickPointIndex = findNearbyPoint(px, py, DOUBLE_CLICK_RADIUS);
-          if (doubleClickPointIndex >= 0) {
-            // Only process double-click with larger radius
-            if (doubleClickPointIndex == lastClickedPoint && (now - lastClickTime) <= DOUBLE_CLICK_TIME) {
-              // Ensure we don't delete if there are only 2 points (minimum required)
-              if (env.points.size() > 2) {
-                env.points.erase(env.points.begin() + doubleClickPointIndex);
-                lastClickedPoint = -1;
-                drawUI();
-              }
-              return;
-            }
-            
-            // Remember this point for potential future double-click
-            lastClickedPoint = doubleClickPointIndex;
-            lastClickTime = now;
-          }
-        }
+  // Use larger radius for all point interactions
+  int pointIndex = findNearbyPoint(px, py, DOUBLE_CLICK_RADIUS);
+  if (pointIndex >= 0) {
+    // Double-click detection
+    if (pointIndex == lastClickedPoint && (now - lastClickTime) <= DOUBLE_CLICK_TIME) {
+      // Ensure we don't delete if there are only 2 points (minimum required)
+      if (env.points.size() > 2) {
+        env.points.erase(env.points.begin() + pointIndex);
+        lastClickedPoint = -1;
+        drawUI();
+      }
+      return;
+    }
+    
+    lastClickedPoint = pointIndex;
+    lastClickTime = now;
+    
+    selectedPoint = pointIndex;
+    holdingPoint = true;
+    holdStartTime = now;
+    drawUI();
+    return;
+  }
         
         int lineIndex = findNearbyLine(px, py);
         if (lineIndex >= 0) {
