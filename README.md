@@ -1156,37 +1156,52 @@ void processTouch() {
     py = constrain(stableY(py), 0, SCREEN_HEIGHT);
     
     // Handle top tab selection first
-    int tabIndex = getEnvelopeTabAt(px, py);
-    if (tabIndex >= 0) {
-      if (tabIndex < 4) {
-        // Envelope tabs
-        currentEnvelope = (EnvelopeType)tabIndex;
-        currentState = ENVELOPE_EDIT;
-        selectedPoint = -1;
-        selectedCurve = -1;
-        holdingPoint = false;
-        holdingCurve = false;
-        lastClickedPoint = -1;
-        drawUI();
-      } else if (tabIndex == 4) {
-        // Save tab
-        currentState = SAVE_NAME_ENTRY;
-        cursorPosition = 0;
-        currentPatchName[0] = '\0';
-        tft.fillScreen(BG_COLOR);
-        drawTabs(false); // Draw only save/load tabs
-        drawKeyboard();
-      } else if (tabIndex == 5) {
-        // Load tab
-        currentState = LOAD_FILE_SELECT;
-        selectedFileIndex = -1;
-        fileScrollOffset = 0;
-        tft.fillScreen(BG_COLOR);
-        drawTabs(false); // Draw only save/load tabs
-        drawFileList();
-      }
-      return;
+    // Handle top tab selection first
+int tabIndex = getEnvelopeTabAt(px, py);
+if (tabIndex >= 0) {
+  if (tabIndex < 4) {
+    // Envelope tabs
+    currentEnvelope = (EnvelopeType)tabIndex;
+    currentState = ENVELOPE_EDIT;
+    selectedPoint = -1;
+    selectedCurve = -1;
+    holdingPoint = false;
+    holdingCurve = false;
+    lastClickedPoint = -1;
+    drawUI();
+  } else if (tabIndex == 4) {
+    // Save tab
+    if (currentState == SAVE_NAME_ENTRY) {
+      // If already in save menu, close it
+      currentState = ENVELOPE_EDIT;
+      drawUI();
+    } else {
+      // Enter save menu
+      currentState = SAVE_NAME_ENTRY;
+      cursorPosition = 0;
+      currentPatchName[0] = '\0';
+      tft.fillScreen(BG_COLOR);
+      drawTabs(false); // Draw only save/load tabs
+      drawKeyboard();
     }
+  } else if (tabIndex == 5) {
+    // Load tab
+    if (currentState == LOAD_FILE_SELECT) {
+      // If already in load menu, close it
+      currentState = ENVELOPE_EDIT;
+      drawUI();
+    } else {
+      // Enter load menu
+      currentState = LOAD_FILE_SELECT;
+      selectedFileIndex = -1;
+      fileScrollOffset = 0;
+      tft.fillScreen(BG_COLOR);
+      drawTabs(false); // Draw only save/load tabs
+      drawFileList();
+    }
+  }
+  return;
+}
     
     // Handle different UI states
     if (currentState == SAVE_NAME_ENTRY) {
