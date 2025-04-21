@@ -32,7 +32,8 @@
 #define TIME_SLIDER_HEIGHT 20
 #define TIME_SLIDER_X 70
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
-#define TIME_SLIDER_CIRCLE_RADIUS 15
+#define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
+#define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
 #define TIME_MIN_VALUE 50    // 50ms
 #define TIME_MAX_VALUE 3500  // 3500ms
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
@@ -371,9 +372,9 @@ void drawTabs(bool includeEnvelopeTabs) {
 void drawTimeSlider() {
   Envelope &env = envelopes[currentEnvelope];
   
-  // Calculate slider position (where the circle should be)
+  // Calculate slider position (where the handle should be)
   int sliderPos = map(env.totalDuration, TIME_MIN_VALUE, TIME_MAX_VALUE, 0, TIME_SLIDER_WIDTH);
-  int circleX = TIME_SLIDER_X + sliderPos;
+  int handleX = TIME_SLIDER_X + sliderPos;
   
   // Draw slider track (line)
   tft.drawLine(TIME_SLIDER_X, TIME_SLIDER_Y, 
@@ -386,9 +387,20 @@ void drawTimeSlider() {
     tft.drawLine(x, TIME_SLIDER_Y - 3, x, TIME_SLIDER_Y + 3, GRID_COLOR);
   }
   
-  // Draw circle handle with value inside
-  tft.fillCircle(circleX, TIME_SLIDER_Y, TIME_SLIDER_CIRCLE_RADIUS, SLIDER_FG);
-  tft.drawCircle(circleX, TIME_SLIDER_Y, TIME_SLIDER_CIRCLE_RADIUS, TFT_WHITE);
+  // Draw oval handle with value inside
+  tft.fillRoundRect(handleX - TIME_SLIDER_HANDLE_WIDTH/2, 
+                   TIME_SLIDER_Y - TIME_SLIDER_HANDLE_HEIGHT/2,
+                   TIME_SLIDER_HANDLE_WIDTH, 
+                   TIME_SLIDER_HANDLE_HEIGHT, 
+                   TIME_SLIDER_HANDLE_HEIGHT/2, 
+                   SLIDER_FG);
+                   
+  tft.drawRoundRect(handleX - TIME_SLIDER_HANDLE_WIDTH/2, 
+                   TIME_SLIDER_Y - TIME_SLIDER_HANDLE_HEIGHT/2,
+                   TIME_SLIDER_HANDLE_WIDTH, 
+                   TIME_SLIDER_HANDLE_HEIGHT, 
+                   TIME_SLIDER_HANDLE_HEIGHT/2, 
+                   TFT_WHITE);
   
   // Format time value
   char timeText[8];
@@ -399,11 +411,11 @@ void drawTimeSlider() {
     sprintf(timeText, "%dms", env.totalDuration);
   }
   
-  // Draw time text inside the circle
+  // Draw time text inside the oval
   tft.setTextColor(TEXT_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(1);
-  tft.drawString(timeText, circleX, TIME_SLIDER_Y);
+  tft.drawString(timeText, handleX, TIME_SLIDER_Y);
 }
 
 int findNearbyPoint(int x, int y, int radius = POINT_RADIUS) {
@@ -449,15 +461,17 @@ int findNearbyLine(int x, int y) {
 }
 
 bool isInTimeSlider(int x, int y) {
-  // Check if point is inside the circle
+  // Calculate current slider handle position
   int sliderPos = map(envelopes[currentEnvelope].totalDuration, 
-                      TIME_MIN_VALUE, TIME_MAX_VALUE, 
-                      0, TIME_SLIDER_WIDTH);
-  int circleX = TIME_SLIDER_X + sliderPos;
-  int dx = x - circleX;
-  int dy = y - TIME_SLIDER_Y;
+                     TIME_MIN_VALUE, TIME_MAX_VALUE, 
+                     0, TIME_SLIDER_WIDTH);
+  int handleX = TIME_SLIDER_X + sliderPos;
   
-  return (dx*dx + dy*dy) <= (TIME_SLIDER_CIRCLE_RADIUS * TIME_SLIDER_CIRCLE_RADIUS);
+  // Check if point is inside the oval-shaped handle
+  return (x >= handleX - TIME_SLIDER_HANDLE_WIDTH/2 &&
+          x <= handleX + TIME_SLIDER_HANDLE_WIDTH/2 &&
+          y >= TIME_SLIDER_Y - TIME_SLIDER_HANDLE_HEIGHT/2 &&
+          y <= TIME_SLIDER_Y + TIME_SLIDER_HANDLE_HEIGHT/2);
 }
 
 int getEnvelopeTabAt(int x, int y) {
@@ -1268,7 +1282,6 @@ void processTouch() {
     py = constrain(stableY(py), 0, SCREEN_HEIGHT);
     
     // Handle top tab selection first
-    // Handle top tab selection first
 int tabIndex = getEnvelopeTabAt(px, py);
 if (tabIndex >= 0) {
   if (tabIndex < 4) {
@@ -1314,7 +1327,16 @@ if (tabIndex >= 0) {
   }
   return;
 }
-    
+    if (isInTimeSlider(px, py)) {
+    // Initial touch on the slider
+    draggingTimeSlider = true;
+    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
+    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+    envelopes[currentEnvelope].totalDuration = newTime;
+    drawUI(false);
+    return;  // Important: return to prevent other touch handling
+  }
+}
     // Handle different UI states
     if (currentState == SAVE_NAME_ENTRY) {
       processKeyboardTouch(px, py);
@@ -1325,18 +1347,17 @@ if (tabIndex >= 0) {
     }
     
     // Original envelope editing code
-    if (isInTimeSlider(px, py)) {
-  draggingTimeSlider = true;
-}
-
-if (draggingTimeSlider) {
-  // Calculate new time value based on position
-  int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
-  int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
-  envelopes[currentEnvelope].totalDuration = newTime;
-  drawUI(false);  // Partial redraw to update just the slider
-  return;
-}
+    // Time slider handling - keep this section near the top of your processTouch function
+// so it happens before point/curve handling
+if (currentState == ENVELOPE_EDIT) {
+  if (draggingTimeSlider) {
+    // If we're dragging, update the slider position
+    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
+    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+    envelopes[currentEnvelope].totalDuration = newTime;
+    drawUI(false);  // Partial redraw
+    return;  // Important: return to prevent other touch handling
+  } else 
     
     if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
       Envelope &env = envelopes[currentEnvelope];
