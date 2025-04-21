@@ -1274,10 +1274,11 @@ void printDirectory(File dir, int numTabs) {
 }
 
 void processTouch() {
+  int px, py;  // Add this line
   if (ts.touched()) {
     TS_Point p = ts.getPoint();
-    int px = map(p.x, 3900, 300, -5, 315);
-    int py = map(p.y, 3900, 300, 0, 240);
+    px = map(p.x, 3900, 300, -5, 315);  // Remove 'int' here
+    py = map(p.y, 3900, 300, 0, 240);   // Remove 'int' here
     px = constrain(stableX(px), 0, SCREEN_WIDTH);
     py = constrain(stableY(py), 0, SCREEN_HEIGHT);
     
