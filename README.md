@@ -151,7 +151,8 @@ int fileScrollOffset = 0;       // Scroll offset for file list
 bool needFullRedraw = true;
 #define MIN_REDRAW_INTERVAL 50  // Minimum time between redraws in ms
 
-// Function prototypes
+
+
 void drawUI(bool fullRedraw = true);
 void drawEnvelope(EnvelopeType envType);
 void drawTabs(bool includeEnvelopeTabs = true);
@@ -168,6 +169,7 @@ void drawKeyboard();
 void processKeyboardTouch(int px, int py);
 void saveCurrentPatch();
 void loadSelectedPatch();
+void loadDefaultPatch();
 void drawFileList();
 void processFileListTouch(int px, int py);
 void updateEnvelopePoint(int pointIndex);
@@ -241,6 +243,7 @@ void setup() {
   
   // Continue with normal initialization
   tft.fillScreen(BG_COLOR);
+  loadDefaultPatch();
   drawUI();
 }
 
@@ -1110,7 +1113,87 @@ void loadSelectedPatch() {
     }
   }
 }
-
+void loadDefaultPatch() {
+  // Path to default patch file
+  const char* defaultPatchPath = "patches/DEFAULT.kck";
+  
+  // Check if the default patch exists
+  if (SD.exists(defaultPatchPath)) {
+    File patchFile = SD.open(defaultPatchPath);
+    
+    if (patchFile) {
+      // Read header - line by line processing
+      char buffer[50];
+      if (readLine(patchFile, buffer, sizeof(buffer)) && 
+          strcmp(buffer, "KICK_PATCH") == 0) {
+        // Skip version line
+        readLine(patchFile, buffer, sizeof(buffer));
+        
+        // Read envelopes
+        while (patchFile.available()) {
+          if (!readLine(patchFile, buffer, sizeof(buffer))) {
+            break;
+          }
+          
+          // Check for envelope section
+          if (strncmp(buffer, "ENVELOPE:", 9) == 0) {
+            int envIndex = atoi(buffer + 9);
+            
+            // Read duration
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "DURATION:", 9) == 0) {
+              envelopes[envIndex].totalDuration = atoi(buffer + 9);
+            }
+            
+            // Read points
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "POINTS:", 7) == 0) {
+              int numPoints = atoi(buffer + 7);
+              envelopes[envIndex].points.clear();
+              
+              for (int i = 0; i < numPoints; i++) {
+                if (readLine(patchFile, buffer, sizeof(buffer))) {
+                  char* comma = strchr(buffer, ',');
+                  if (comma) {
+                    *comma = 0; // Split string at comma
+                    int x = atoi(buffer);
+                    int y = atoi(comma + 1);
+                    envelopes[envIndex].points.push_back({x, y});
+                  }
+                }
+              }
+            }
+            
+            // Read curves
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "CURVES:", 7) == 0) {
+              int numCurves = atoi(buffer + 7);
+              envelopes[envIndex].curves.clear();
+              
+              for (int i = 0; i < numCurves; i++) {
+                if (readLine(patchFile, buffer, sizeof(buffer))) {
+                  char* comma = strchr(buffer, ',');
+                  if (comma) {
+                    *comma = 0; // Split string at comma
+                    int index = atoi(buffer);
+                    int offset = atoi(comma + 1);
+                    envelopes[envIndex].curves.push_back({index, offset});
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        Serial.println("Default patch loaded successfully");
+      }
+      
+      patchFile.close();
+    }
+  } else {
+    Serial.println("Default patch not found");
+  }
+}
 // Helper function to read a line from a file into a buffer
 bool readLine(File &file, char* buffer, int maxLen) {
   int i = 0;
