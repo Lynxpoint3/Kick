@@ -671,7 +671,7 @@ void drawKeyboard() {
   // Save key
   tft.fillRoundRect(7.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x04A0);
   tft.drawString("SAVE", 8.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-
+}
 void processKeyboardTouch(int px, int py) {
   // Debounce touches
   unsigned long now = millis();
