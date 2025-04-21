@@ -32,6 +32,9 @@
 #define TIME_SLIDER_HEIGHT 20
 #define TIME_SLIDER_X 70
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
+#define TIME_SLIDER_CIRCLE_RADIUS 15
+#define TIME_MIN_VALUE 50    // 50ms
+#define TIME_MAX_VALUE 3500  // 3500ms
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
 
 // Keyboard Constants
@@ -278,16 +281,6 @@ void drawGrid() {
 void drawEnvelope(EnvelopeType envType) {
   Envelope &env = envelopes[envType];
   uint16_t envColor = ENV_COLORS[envType];
-  tft.setTextColor(TEXT_COLOR, BG_COLOR);
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextSize(1);
-  char durationText[20];
-  if (env.totalDuration >= 1000) {
-    sprintf(durationText, "LENGTH: %.2f s", env.totalDuration / 1000.0);
-  } else {
-    sprintf(durationText, "LENGTH: %d ms", env.totalDuration);
-  }
-  tft.drawString(durationText, SCREEN_WIDTH - 5, ENV_VIEW_TOP + 15);
   for (size_t i = 1; i < env.points.size(); i++) {
     Point p1 = env.points[i-1];
     Point p2 = env.points[i];
@@ -377,17 +370,40 @@ void drawTabs(bool includeEnvelopeTabs) {
 
 void drawTimeSlider() {
   Envelope &env = envelopes[currentEnvelope];
-  int sliderPos = map(env.totalDuration, 100, 5000, 0, TIME_SLIDER_WIDTH);
-  tft.fillRoundRect(TIME_SLIDER_X, TIME_SLIDER_Y - TIME_SLIDER_HEIGHT/2, 
-                   TIME_SLIDER_WIDTH, TIME_SLIDER_HEIGHT, 
-                   TIME_SLIDER_HEIGHT/2, SLIDER_BG);
-  tft.fillRoundRect(TIME_SLIDER_X, TIME_SLIDER_Y - TIME_SLIDER_HEIGHT/2, 
-                   sliderPos, TIME_SLIDER_HEIGHT, 
-                   TIME_SLIDER_HEIGHT/2, SLIDER_FG);
+  
+  // Calculate slider position (where the circle should be)
+  int sliderPos = map(env.totalDuration, TIME_MIN_VALUE, TIME_MAX_VALUE, 0, TIME_SLIDER_WIDTH);
+  int circleX = TIME_SLIDER_X + sliderPos;
+  
+  // Draw slider track (line)
+  tft.drawLine(TIME_SLIDER_X, TIME_SLIDER_Y, 
+               TIME_SLIDER_X + TIME_SLIDER_WIDTH, TIME_SLIDER_Y, 
+               GRID_COLOR);
+              
+  // Draw small tick marks
+  for (int i = 0; i <= 4; i++) {
+    int x = TIME_SLIDER_X + (TIME_SLIDER_WIDTH * i / 4);
+    tft.drawLine(x, TIME_SLIDER_Y - 3, x, TIME_SLIDER_Y + 3, GRID_COLOR);
+  }
+  
+  // Draw circle handle with value inside
+  tft.fillCircle(circleX, TIME_SLIDER_Y, TIME_SLIDER_CIRCLE_RADIUS, SLIDER_FG);
+  tft.drawCircle(circleX, TIME_SLIDER_Y, TIME_SLIDER_CIRCLE_RADIUS, TFT_WHITE);
+  
+  // Format time value
+  char timeText[8];
+  if (env.totalDuration >= 1000) {
+    float seconds = env.totalDuration / 1000.0;
+    sprintf(timeText, "%.1fs", seconds);
+  } else {
+    sprintf(timeText, "%dms", env.totalDuration);
+  }
+  
+  // Draw time text inside the circle
   tft.setTextColor(TEXT_COLOR);
-  tft.setTextDatum(MR_DATUM);
+  tft.setTextDatum(MC_DATUM);
   tft.setTextSize(1);
-  tft.drawString("TIME:", TIME_SLIDER_X - 5, TIME_SLIDER_Y);
+  tft.drawString(timeText, circleX, TIME_SLIDER_Y);
 }
 
 int findNearbyPoint(int x, int y, int radius = POINT_RADIUS) {
@@ -433,8 +449,15 @@ int findNearbyLine(int x, int y) {
 }
 
 bool isInTimeSlider(int x, int y) {
-  return x >= TIME_SLIDER_X && x <= TIME_SLIDER_X + TIME_SLIDER_WIDTH &&
-         y >= TIME_SLIDER_Y - TIME_SLIDER_HEIGHT && y <= TIME_SLIDER_Y + TIME_SLIDER_HEIGHT;
+  // Check if point is inside the circle
+  int sliderPos = map(envelopes[currentEnvelope].totalDuration, 
+                      TIME_MIN_VALUE, TIME_MAX_VALUE, 
+                      0, TIME_SLIDER_WIDTH);
+  int circleX = TIME_SLIDER_X + sliderPos;
+  int dx = x - circleX;
+  int dy = y - TIME_SLIDER_Y;
+  
+  return (dx*dx + dy*dy) <= (TIME_SLIDER_CIRCLE_RADIUS * TIME_SLIDER_CIRCLE_RADIUS);
 }
 
 int getEnvelopeTabAt(int x, int y) {
@@ -1303,11 +1326,17 @@ if (tabIndex >= 0) {
     
     // Original envelope editing code
     if (isInTimeSlider(px, py)) {
-      int sliderValue = map(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH, 100, 5000);
-      envelopes[currentEnvelope].totalDuration = constrain(sliderValue, 100, 5000);
-      drawUI();
-      return;
-    }
+  draggingTimeSlider = true;
+}
+
+if (draggingTimeSlider) {
+  // Calculate new time value based on position
+  int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
+  int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+  envelopes[currentEnvelope].totalDuration = newTime;
+  drawUI(false);  // Partial redraw to update just the slider
+  return;
+}
     
     if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
       Envelope &env = envelopes[currentEnvelope];
