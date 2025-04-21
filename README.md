@@ -35,7 +35,7 @@
 #define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
 #define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
 #define TIME_MIN_VALUE 50    // 50ms
-#define TIME_MAX_VALUE 3500  // 3500ms
+#define TIME_MAX_VALUE 4200  // 3500ms
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
 
 // Keyboard Constants
@@ -1092,9 +1092,12 @@ void loadSelectedPatch() {
               
               // Read duration
               if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                  strncmp(buffer, "DURATION:", 9) == 0) {
-                envelopes[envIndex].totalDuration = atoi(buffer + 9);
-              }
+    strncmp(buffer, "DURATION:", 9) == 0) {
+  int duration = atoi(buffer + 9);
+  // Make sure the loaded duration is within our valid range
+  duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
+  envelopes[envIndex].totalDuration = duration;
+}
               
               // Read points
               if (readLine(patchFile, buffer, sizeof(buffer)) && 
@@ -1179,8 +1182,13 @@ void loadDefaultPatch() {
             // Read duration
             if (readLine(patchFile, buffer, sizeof(buffer)) && 
                 strncmp(buffer, "DURATION:", 9) == 0) {
-              envelopes[envIndex].totalDuration = atoi(buffer + 9);
+              int duration = atoi(buffer + 9);
+              // Make sure the loaded duration is within our valid range
+              duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
+              envelopes[envIndex].totalDuration = duration;
             }
+            
+            // ... rest of function unchanged ...
             
             // Read points
             if (readLine(patchFile, buffer, sizeof(buffer)) && 
