@@ -15,6 +15,8 @@
 #define SCREEN_HEIGHT 240
 
 // UI Constants
+unsigned long lastKeyboardTouchTime = 0;
+#define KEYBOARD_DEBOUNCE_TIME 300
 #define TOP_BAR_HEIGHT 30
 #define ENV_VIEW_TOP TOP_BAR_HEIGHT
 #define ENV_VIEW_WIDTH SCREEN_WIDTH
@@ -376,6 +378,13 @@ void drawTimeSlider() {
   int sliderPos = map(env.totalDuration, TIME_MIN_VALUE, TIME_MAX_VALUE, 0, TIME_SLIDER_WIDTH);
   int handleX = TIME_SLIDER_X + sliderPos;
   
+  // Clear the slider area first
+  tft.fillRect(TIME_SLIDER_X - TIME_SLIDER_HANDLE_WIDTH/2, 
+               TIME_SLIDER_Y - TIME_SLIDER_HANDLE_HEIGHT/2 - 5,
+               TIME_SLIDER_WIDTH + TIME_SLIDER_HANDLE_WIDTH, 
+               TIME_SLIDER_HANDLE_HEIGHT + 10, 
+               BG_COLOR);
+  
   // Draw slider track (line)
   tft.drawLine(TIME_SLIDER_X, TIME_SLIDER_Y, 
                TIME_SLIDER_X + TIME_SLIDER_WIDTH, TIME_SLIDER_Y, 
@@ -647,18 +656,30 @@ void drawKeyboard() {
     tft.drawString(String(row3_keys[i]), (i + 1.5) * KEY_WIDTH + KEY_WIDTH/2, row4Y + KEY_HEIGHT/2);
   }
   
-  // Special keys
-  tft.fillRoundRect(1 * KEY_WIDTH + 2, row5Y, 3 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-  tft.drawString("SPACE", 2.5 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
+    // Special keys - evenly spaced
+  tft.fillRoundRect(1 * KEY_WIDTH + 2, row5Y, 2 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
+  tft.drawString("SPACE", 2 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
   
-  tft.fillRoundRect(4.5 * KEY_WIDTH + 2, row5Y, 2 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-  tft.drawString("CLEAR", 5.5 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
+  // Backspace key
+  tft.fillRoundRect(3.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
+  tft.drawString("DEL", 4.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
   
-  tft.fillRoundRect(7 * KEY_WIDTH + 2, row5Y, 2 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x04A0);
-  tft.drawString("SAVE", 8 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-}
+  // Clear key
+  tft.fillRoundRect(5.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
+  tft.drawString("CLEAR", 6.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
+  
+  // Save key
+  tft.fillRoundRect(7.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x04A0);
+  tft.drawString("SAVE", 8.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
 
 void processKeyboardTouch(int px, int py) {
+  // Debounce touches
+  unsigned long now = millis();
+  if (now - lastKeyboardTouchTime < KEYBOARD_DEBOUNCE_TIME) {
+    return;  // Ignore too-rapid touches
+  }
+  lastKeyboardTouchTime = now;
+  
   // Check if touch is in the keyboard area
   if (py < KEYBOARD_TOP) return;
   
@@ -709,19 +730,27 @@ void processKeyboardTouch(int px, int py) {
   // Special keys
   else if (py >= row5Y && py < row5Y + KEY_HEIGHT) {
     // Space key
-    if (px >= 1 * KEY_WIDTH && px < 4 * KEY_WIDTH && cursorPosition < 19) {
+    if (px >= 1 * KEY_WIDTH && px < 3 * KEY_WIDTH && cursorPosition < 19) {
       currentPatchName[cursorPosition++] = ' ';
       currentPatchName[cursorPosition] = '\0';
       drawKeyboard();
     }
+    // Backspace key
+    else if (px >= 3.5 * KEY_WIDTH && px < 5 * KEY_WIDTH) {
+      if (cursorPosition > 0) {
+        cursorPosition--;
+        currentPatchName[cursorPosition] = '\0';
+        drawKeyboard();
+      }
+    }
     // Clear key
-    else if (px >= 4.5 * KEY_WIDTH && px < 6.5 * KEY_WIDTH) {
+    else if (px >= 5.5 * KEY_WIDTH && px < 7 * KEY_WIDTH) {
       cursorPosition = 0;
       currentPatchName[0] = '\0';
       drawKeyboard();
     }
     // Save key
-    else if (px >= 7 * KEY_WIDTH && px < 9 * KEY_WIDTH) {
+    else if (px >= 7.5 * KEY_WIDTH && px < 9 * KEY_WIDTH) {
       if (strlen(currentPatchName) > 0) {
         saveCurrentPatch();
         currentState = ENVELOPE_EDIT;
@@ -1358,20 +1387,18 @@ if (tabIndex >= 0) {
     // Original envelope editing code
     // Time slider handling - keep this section near the top of your processTouch function
 // so it happens before point/curve handling
+// In the processTouch() function
 if (currentState == ENVELOPE_EDIT) {
-  // First, check for time slider interaction
-  if (isInTimeSlider(px, py)) {
+  // Handle time slider first
+  if (draggingTimeSlider || isInTimeSlider(px, py)) {
     draggingTimeSlider = true;
-  }
-  
-  if (draggingTimeSlider) {
-    // If we're dragging, update the slider position
+    // Update position 
     int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
     int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
     envelopes[currentEnvelope].totalDuration = newTime;
-    drawTimeSlider();  // Only redraw the slider for better performance
-    return;  // Important: return to prevent other touch handling
-  } else 
+    drawTimeSlider();  // Just redraw the slider
+    return;  // Stop processing other touch events
+  } else
     
     if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
       Envelope &env = envelopes[currentEnvelope];
