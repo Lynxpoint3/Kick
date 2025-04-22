@@ -1389,15 +1389,23 @@ if (tabIndex >= 0) {
 // so it happens before point/curve handling
 // In the processTouch() function
 if (currentState == ENVELOPE_EDIT) {
-  // Handle time slider first
-  if (draggingTimeSlider || isInTimeSlider(px, py)) {
-    draggingTimeSlider = true;
-    // Update position 
+  // Check for time slider interaction
+  if (draggingTimeSlider) {
+    // Update slider position while dragging
     int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
     int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
     envelopes[currentEnvelope].totalDuration = newTime;
-    drawTimeSlider();  // Just redraw the slider
-    return;  // Stop processing other touch events
+    drawTimeSlider();  // Only redraw the slider
+    return;  // Exit to prevent other touch handling
+  }
+  else if (isInTimeSlider(px, py)) {
+    // Initial touch on slider
+    draggingTimeSlider = true;
+    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
+    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+    envelopes[currentEnvelope].totalDuration = newTime;
+    drawTimeSlider();  // Only redraw the slider
+    return;  // Exit to prevent other touch handling
   } else
     
     if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
