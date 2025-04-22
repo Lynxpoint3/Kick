@@ -15,8 +15,6 @@
 #define SCREEN_HEIGHT 240
 
 // UI Constants
-unsigned long lastKeyboardTouchTime = 0;
-#define KEYBOARD_DEBOUNCE_TIME 300
 #define TOP_BAR_HEIGHT 30
 #define ENV_VIEW_TOP TOP_BAR_HEIGHT
 #define ENV_VIEW_WIDTH SCREEN_WIDTH
@@ -36,8 +34,8 @@ unsigned long lastKeyboardTouchTime = 0;
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
 #define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
 #define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
-#define TIME_MIN_VALUE 50    // 50ms
-#define TIME_MAX_VALUE 4200  // 3500ms
+#define TIME_MIN_VALUE 50                  // 50ms minimum time
+#define TIME_MAX_VALUE 4200                // 4200ms maximum time
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
 
 // Keyboard Constants
@@ -146,6 +144,8 @@ bool draggingTimeSlider = false;
 unsigned long holdStartTime = 0;
 unsigned long lastClickTime = 0;
 unsigned long lastDrawTime = 0;
+unsigned long lastKeyboardTouchTime = 0;
+#define KEYBOARD_DEBOUNCE_TIME 300  // Minimum time between key presses in ms
 int lastClickedPoint = -1;
 std::vector<int> jitterBufferX;
 std::vector<int> jitterBufferY;
@@ -157,8 +157,7 @@ int fileScrollOffset = 0;       // Scroll offset for file list
 bool needFullRedraw = true;
 #define MIN_REDRAW_INTERVAL 50  // Minimum time between redraws in ms
 
-
-
+// Function prototypes
 void drawUI(bool fullRedraw = true);
 void drawEnvelope(EnvelopeType envType);
 void drawTabs(bool includeEnvelopeTabs = true);
@@ -175,13 +174,12 @@ void drawKeyboard();
 void processKeyboardTouch(int px, int py);
 void saveCurrentPatch();
 void loadSelectedPatch();
-void loadDefaultPatch();
 void drawFileList();
 void processFileListTouch(int px, int py);
 void updateEnvelopePoint(int pointIndex);
 bool readLine(File &file, char* buffer, int maxLen);
 void printDirectory(File dir, int numTabs);
-
+void loadDefaultPatch();
 void setup() {
   Serial.begin(115200);
   delay(1000); // Give serial time to start
@@ -206,7 +204,7 @@ void setup() {
   tft.setTextSize(1);
   tft.drawString("INITIALIZING SD CARD...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
   
-  // Try to initialize SD without any parameters (for built-in SD slot)
+  // Try to initialize SD with BUILTIN_SDCARD for the Teensy 4.1
   Serial.println("Initializing SD card...");
   if (!SD.begin(BUILTIN_SDCARD)) {
     Serial.println("SD Card initialization failed!");
@@ -249,7 +247,11 @@ void setup() {
   
   // Continue with normal initialization
   tft.fillScreen(BG_COLOR);
+  
+  // Load default patch
   loadDefaultPatch();
+  
+  // Draw the UI
   drawUI();
 }
 
@@ -284,6 +286,8 @@ void drawGrid() {
 void drawEnvelope(EnvelopeType envType) {
   Envelope &env = envelopes[envType];
   uint16_t envColor = ENV_COLORS[envType];
+  
+  // Draw envelope lines and curves
   for (size_t i = 1; i < env.points.size(); i++) {
     Point p1 = env.points[i-1];
     Point p2 = env.points[i];
@@ -325,6 +329,8 @@ void drawEnvelope(EnvelopeType envType) {
       }
     }
   }
+  
+  // Draw points
   for (size_t i = 0; i < env.points.size(); i++) {
     if (static_cast<int>(i) == selectedPoint && holdingPoint) { // Fix signedness warning
       tft.fillCircle(env.points[i].x, env.points[i].y, POINT_RADIUS, SELECTED_POINT_COLOR);
@@ -427,7 +433,7 @@ void drawTimeSlider() {
   tft.drawString(timeText, handleX, TIME_SLIDER_Y);
 }
 
-int findNearbyPoint(int x, int y, int radius = POINT_RADIUS) {
+int findNearbyPoint(int x, int y, int radius) {
   Envelope &env = envelopes[currentEnvelope];
   int closestPoint = -1;
   int minDistSq = radius * radius + 1; // Initialize with value just outside radius
@@ -443,8 +449,6 @@ int findNearbyPoint(int x, int y, int radius = POINT_RADIUS) {
   }
   return closestPoint;
 }
-
-
 int findNearbyLine(int x, int y) {
   Envelope &env = envelopes[currentEnvelope];
   for (size_t i = 1; i < env.points.size(); i++) {
@@ -656,7 +660,7 @@ void drawKeyboard() {
     tft.drawString(String(row3_keys[i]), (i + 1.5) * KEY_WIDTH + KEY_WIDTH/2, row4Y + KEY_HEIGHT/2);
   }
   
-    // Special keys - evenly spaced
+  // Special keys - evenly spaced
   tft.fillRoundRect(1 * KEY_WIDTH + 2, row5Y, 2 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
   tft.drawString("SPACE", 2 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
   
@@ -672,6 +676,7 @@ void drawKeyboard() {
   tft.fillRoundRect(7.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x04A0);
   tft.drawString("SAVE", 8.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
 }
+
 void processKeyboardTouch(int px, int py) {
   // Debounce touches
   unsigned long now = millis();
@@ -940,7 +945,7 @@ void processFileListTouch(int px, int py) {
   if (py > TOP_BAR_HEIGHT + 40 && py < SCREEN_HEIGHT - 50) {
     int fileIndex = fileScrollOffset + ((py - (TOP_BAR_HEIGHT + 40)) / 30);
     
-    // Verify this is a valid file index
+    // Check if this is a valid file index
     bool validIndex = false;
     int count = 0;
     
@@ -955,6 +960,8 @@ void processFileListTouch(int px, int py) {
         if (!entry.isDirectory() && String(entry.name()).endsWith(".kck")) {
           if (count == fileIndex) {
             validIndex = true;
+            Serial.print("Selected file index: ");
+            Serial.println(fileIndex);
             break;
           }
           count++;
@@ -967,12 +974,16 @@ void processFileListTouch(int px, int py) {
     if (validIndex) {
       selectedFileIndex = fileIndex;
       drawFileList();
+      return; // Don't process load button in the same touch
     }
   }
   
-  // Handle load button
+  // Handle load button - only if we have a valid selection
   if (py > SCREEN_HEIGHT - 40 && py < SCREEN_HEIGHT - 10 &&
-      px > SCREEN_WIDTH/2 - 40 && px < SCREEN_WIDTH/2 + 40) {
+      px > SCREEN_WIDTH/2 - 40 && px < SCREEN_WIDTH/2 + 40 && 
+      selectedFileIndex >= 0) {
+    Serial.print("Loading selected patch: ");
+    Serial.println(selectedFileIndex);
     loadSelectedPatch();
     currentState = ENVELOPE_EDIT;
     drawUI();
@@ -1068,6 +1079,9 @@ void saveCurrentPatch() {
 void loadSelectedPatch() {
   if (selectedFileIndex < 0) return;
   
+  Serial.print("Starting load of patch index: ");
+  Serial.println(selectedFileIndex);
+  
   // Find the selected file by index
   if (SD.exists("patches")) {
     patchDir = SD.open("patches");
@@ -1085,6 +1099,8 @@ void loadSelectedPatch() {
         if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
           if (fileCount == selectedFileIndex) {
             strcpy(filename, entryName);
+            Serial.print("Found file: ");
+            Serial.println(filename);
             entry.close();
             break;
           }
@@ -1099,6 +1115,9 @@ void loadSelectedPatch() {
       // Open the selected file
       char fullPath[100] = "patches/";
       strcat(fullPath, filename);
+      Serial.print("Opening file: ");
+      Serial.println(fullPath);
+      
       File patchFile = SD.open(fullPath);
       
       if (patchFile) {
@@ -1106,6 +1125,8 @@ void loadSelectedPatch() {
         char buffer[50];
         if (readLine(patchFile, buffer, sizeof(buffer)) && 
             strcmp(buffer, "KICK_PATCH") == 0) {
+          Serial.println("Valid patch file found");
+          
           // Skip version line
           readLine(patchFile, buffer, sizeof(buffer));
           
@@ -1121,12 +1142,16 @@ void loadSelectedPatch() {
               
               // Read duration
               if (readLine(patchFile, buffer, sizeof(buffer)) && 
-    strncmp(buffer, "DURATION:", 9) == 0) {
-  int duration = atoi(buffer + 9);
-  // Make sure the loaded duration is within our valid range
-  duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
-  envelopes[envIndex].totalDuration = duration;
-}
+                  strncmp(buffer, "DURATION:", 9) == 0) {
+                int duration = atoi(buffer + 9);
+                // Make sure the loaded duration is within our valid range
+                duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
+                envelopes[envIndex].totalDuration = duration;
+                Serial.print("Loaded duration for env ");
+                Serial.print(envIndex);
+                Serial.print(": ");
+                Serial.println(duration);
+              }
               
               // Read points
               if (readLine(patchFile, buffer, sizeof(buffer)) && 
@@ -1145,6 +1170,10 @@ void loadSelectedPatch() {
                     }
                   }
                 }
+                Serial.print("Loaded points for env ");
+                Serial.print(envIndex);
+                Serial.print(": ");
+                Serial.println(envelopes[envIndex].points.size());
               }
               
               // Read curves
@@ -1168,6 +1197,8 @@ void loadSelectedPatch() {
             }
           }
           
+          Serial.println("Patch loaded successfully");
+          
           // Indicate success
           tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, 0x04A0);
           tft.setTextColor(TEXT_COLOR);
@@ -1182,92 +1213,7 @@ void loadSelectedPatch() {
     }
   }
 }
-void loadDefaultPatch() {
-  // Path to default patch file
-  const char* defaultPatchPath = "patches/DEFAULT.kck";
-  
-  // Check if the default patch exists
-  if (SD.exists(defaultPatchPath)) {
-    File patchFile = SD.open(defaultPatchPath);
-    
-    if (patchFile) {
-      // Read header - line by line processing
-      char buffer[50];
-      if (readLine(patchFile, buffer, sizeof(buffer)) && 
-          strcmp(buffer, "KICK_PATCH") == 0) {
-        // Skip version line
-        readLine(patchFile, buffer, sizeof(buffer));
-        
-        // Read envelopes
-        while (patchFile.available()) {
-          if (!readLine(patchFile, buffer, sizeof(buffer))) {
-            break;
-          }
-          
-          // Check for envelope section
-          if (strncmp(buffer, "ENVELOPE:", 9) == 0) {
-            int envIndex = atoi(buffer + 9);
-            
-            // Read duration
-            if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                strncmp(buffer, "DURATION:", 9) == 0) {
-              int duration = atoi(buffer + 9);
-              // Make sure the loaded duration is within our valid range
-              duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
-              envelopes[envIndex].totalDuration = duration;
-            }
-            
-            // ... rest of function unchanged ...
-            
-            // Read points
-            if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                strncmp(buffer, "POINTS:", 7) == 0) {
-              int numPoints = atoi(buffer + 7);
-              envelopes[envIndex].points.clear();
-              
-              for (int i = 0; i < numPoints; i++) {
-                if (readLine(patchFile, buffer, sizeof(buffer))) {
-                  char* comma = strchr(buffer, ',');
-                  if (comma) {
-                    *comma = 0; // Split string at comma
-                    int x = atoi(buffer);
-                    int y = atoi(comma + 1);
-                    envelopes[envIndex].points.push_back({x, y});
-                  }
-                }
-              }
-            }
-            
-            // Read curves
-            if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                strncmp(buffer, "CURVES:", 7) == 0) {
-              int numCurves = atoi(buffer + 7);
-              envelopes[envIndex].curves.clear();
-              
-              for (int i = 0; i < numCurves; i++) {
-                if (readLine(patchFile, buffer, sizeof(buffer))) {
-                  char* comma = strchr(buffer, ',');
-                  if (comma) {
-                    *comma = 0; // Split string at comma
-                    int index = atoi(buffer);
-                    int offset = atoi(comma + 1);
-                    envelopes[envIndex].curves.push_back({index, offset});
-                  }
-                }
-              }
-            }
-          }
-        }
-        
-        Serial.println("Default patch loaded successfully");
-      }
-      
-      patchFile.close();
-    }
-  } else {
-    Serial.println("Default patch not found");
-  }
-}
+
 // Helper function to read a line from a file into a buffer
 bool readLine(File &file, char* buffer, int maxLen) {
   int i = 0;
@@ -1310,71 +1256,104 @@ void printDirectory(File dir, int numTabs) {
   }
 }
 
+void loadDefaultPatch() {
+  // Path to default patch file
+  const char* defaultPatchPath = "patches/DEFAULT.kck";
+  
+  // Check if the default patch exists
+  if (SD.exists(defaultPatchPath)) {
+    Serial.println("Found DEFAULT.kck, loading it...");
+    File patchFile = SD.open(defaultPatchPath);
+    
+    if (patchFile) {
+      // Read header - line by line processing
+      char buffer[50];
+      if (readLine(patchFile, buffer, sizeof(buffer)) && 
+          strcmp(buffer, "KICK_PATCH") == 0) {
+        // Skip version line
+        readLine(patchFile, buffer, sizeof(buffer));
+        
+        // Read envelopes
+        while (patchFile.available()) {
+          if (!readLine(patchFile, buffer, sizeof(buffer))) {
+            break;
+          }
+          
+          // Check for envelope section
+          if (strncmp(buffer, "ENVELOPE:", 9) == 0) {
+            int envIndex = atoi(buffer + 9);
+            
+            // Read duration
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "DURATION:", 9) == 0) {
+              int duration = atoi(buffer + 9);
+              // Make sure the loaded duration is within our valid range
+              duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
+              envelopes[envIndex].totalDuration = duration;
+              Serial.print("Loaded duration for env ");
+              Serial.print(envIndex);
+              Serial.print(": ");
+              Serial.println(duration);
+            }
+            
+            // Read points
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "POINTS:", 7) == 0) {
+              int numPoints = atoi(buffer + 7);
+              envelopes[envIndex].points.clear();
+              
+              for (int i = 0; i < numPoints; i++) {
+                if (readLine(patchFile, buffer, sizeof(buffer))) {
+                  char* comma = strchr(buffer, ',');
+                  if (comma) {
+                    *comma = 0; // Split string at comma
+                    int x = atoi(buffer);
+                    int y = atoi(comma + 1);
+                    envelopes[envIndex].points.push_back({x, y});
+                  }
+                }
+              }
+              
+              // Read curves
+              if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                  strncmp(buffer, "CURVES:", 7) == 0) {
+                int numCurves = atoi(buffer + 7);
+                envelopes[envIndex].curves.clear();
+                
+                for (int i = 0; i < numCurves; i++) {
+                  if (readLine(patchFile, buffer, sizeof(buffer))) {
+                    char* comma = strchr(buffer, ',');
+                    if (comma) {
+                      *comma = 0; // Split string at comma
+                      int index = atoi(buffer);
+                      int offset = atoi(comma + 1);
+                      envelopes[envIndex].curves.push_back({index, offset});
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        Serial.println("Default patch loaded successfully");
+      }
+      
+      patchFile.close();
+    }
+  } else {
+    Serial.println("Default patch not found");
+  }
+}
+
 void processTouch() {
-  int px, py;  // Add this line
   if (ts.touched()) {
     TS_Point p = ts.getPoint();
-    px = map(p.x, 3900, 300, -5, 315);  // Remove 'int' here
-    py = map(p.y, 3900, 300, 0, 240);   // Remove 'int' here
+    int px = map(p.x, 3900, 300, -5, 315);
+    int py = map(p.y, 3900, 300, 0, 240);
     px = constrain(stableX(px), 0, SCREEN_WIDTH);
     py = constrain(stableY(py), 0, SCREEN_HEIGHT);
     
-    // Handle top tab selection first
-int tabIndex = getEnvelopeTabAt(px, py);
-if (tabIndex >= 0) {
-  if (tabIndex < 4) {
-    // Envelope tabs
-    currentEnvelope = (EnvelopeType)tabIndex;
-    currentState = ENVELOPE_EDIT;
-    selectedPoint = -1;
-    selectedCurve = -1;
-    holdingPoint = false;
-    holdingCurve = false;
-    lastClickedPoint = -1;
-    drawUI();
-  } else if (tabIndex == 4) {
-    // Save tab
-    if (currentState == SAVE_NAME_ENTRY) {
-      // If already in save menu, close it
-      currentState = ENVELOPE_EDIT;
-      drawUI();
-    } else {
-      // Enter save menu
-      currentState = SAVE_NAME_ENTRY;
-      cursorPosition = 0;
-      currentPatchName[0] = '\0';
-      tft.fillScreen(BG_COLOR);
-      drawTabs(false); // Draw only save/load tabs
-      drawKeyboard();
-    }
-  } else if (tabIndex == 5) {
-    // Load tab
-    if (currentState == LOAD_FILE_SELECT) {
-      // If already in load menu, close it
-      currentState = ENVELOPE_EDIT;
-      drawUI();
-    } else {
-      // Enter load menu
-      currentState = LOAD_FILE_SELECT;
-      selectedFileIndex = -1;
-      fileScrollOffset = 0;
-      tft.fillScreen(BG_COLOR);
-      drawTabs(false); // Draw only save/load tabs
-      drawFileList();
-    }
-  }
-  return;
-}
-    if (isInTimeSlider(px, py)) {
-    // Initial touch on the slider
-    draggingTimeSlider = true;
-    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
-    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
-    envelopes[currentEnvelope].totalDuration = newTime;
-    drawUI(false);
-    return;  // Important: return to prevent other touch handling
-  }
-}
     // Handle different UI states
     if (currentState == SAVE_NAME_ENTRY) {
       processKeyboardTouch(px, py);
@@ -1384,157 +1363,194 @@ if (tabIndex >= 0) {
       return;
     }
     
-    // Original envelope editing code
-    // Time slider handling - keep this section near the top of your processTouch function
-// so it happens before point/curve handling
-// In the processTouch() function
-if (currentState == ENVELOPE_EDIT) {
-  // Check for time slider interaction
-  if (draggingTimeSlider) {
-    // Update slider position while dragging
-    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
-    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
-    envelopes[currentEnvelope].totalDuration = newTime;
-    drawTimeSlider();  // Only redraw the slider
-    return;  // Exit to prevent other touch handling
-  }
-  else if (isInTimeSlider(px, py)) {
-    // Initial touch on slider
-    draggingTimeSlider = true;
-    int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
-    int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
-    envelopes[currentEnvelope].totalDuration = newTime;
-    drawTimeSlider();  // Only redraw the slider
-    return;  // Exit to prevent other touch handling
-  } else
-    
-    if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
-      Envelope &env = envelopes[currentEnvelope];
-      unsigned long now = millis();
-      
-      if (holdingPoint) {
-        env.points[selectedPoint].x = px;
-        env.points[selectedPoint].y = py;
-        env.points[selectedPoint].x = constrain(env.points[selectedPoint].x, 0, SCREEN_WIDTH);
-        env.points[selectedPoint].y = constrain(env.points[selectedPoint].y, ENV_VIEW_TOP, ENV_VIEW_TOP + ENV_VIEW_HEIGHT);
-        if (selectedPoint == 0) {
-          env.points[selectedPoint].x = 0;
-        } else if (selectedPoint == static_cast<int>(env.points.size()) - 1) {
-          env.points[selectedPoint].x = SCREEN_WIDTH - 1;
-        }
-        removeLineOverlaps(); // Handles drag-over deletion
-        
-        // Throttle redraw for better performance
-        unsigned long now = millis();
-        if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
-          lastDrawTime = now;
-          drawUI();
-        }
-      } else if (holdingCurve) {
-        for (auto &c : env.curves) {
-          if (c.index == selectedCurve) {
-            // Get the line's start and end points
-            int x1 = env.points[c.index].x;
-            int y1 = env.points[c.index].y;
-            int x2 = env.points[c.index + 1].x;
-            int y2 = env.points[c.index + 1].y;
-            
-            // Calculate the perpendicular distance from cursor to line
-            float dx = x2 - x1;
-            float dy = y2 - y1;
-            float lineLength = sqrt(dx * dx + dy * dy);
-            
-            // Project cursor onto the line
-            float t = constrain(((px - x1) * dx + (py - y1) * dy) / (dx*dx + dy*dy), 0.0f, 1.0f);
-            float projX = x1 + t * dx;
-            float projY = y1 + t * dy;
-            
-            // Calculate perpendicular vector
-            float perpX = px - projX;
-            float perpY = py - projY;
-            float perpLength = sqrt(perpX*perpX + perpY*perpY);
-            
-            // Calculate offset based on perpendicular distance and projection point
-            if (perpLength > 0) {
-              // Set offset based on cursor position relative to the line
-              // We want the peak of the curve to follow the cursor
-              int midPointX = (x1 + x2) / 2;
-              float offsetScale = 2.0f * (t - 0.5f);
-              c.offset = round(perpLength * (perpX / perpLength)) - ((projX - midPointX) * offsetScale);
-            }
-            
-            // Constrain offset to prevent extreme curves
-            int xDist = x2 - x1;
-            int maxOffset = xDist / 2;
-            c.offset = constrain(c.offset, -maxOffset, maxOffset);
-            
-            // Throttle redraw for better performance
-            if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
-              lastDrawTime = now;
-              drawUI();
-            }
-            break;
-          }
-        }
-      } else {
-  // Use larger radius for all point interactions
-  int pointIndex = findNearbyPoint(px, py, DOUBLE_CLICK_RADIUS);
-  if (pointIndex >= 0) {
-    // Double-click detection
-    if (pointIndex == lastClickedPoint && (now - lastClickTime) <= DOUBLE_CLICK_TIME) {
-      // Ensure we don't delete if there are only 2 points (minimum required)
-      if (env.points.size() > 2) {
-        env.points.erase(env.points.begin() + pointIndex);
+    // Handle top tab selection first
+    int tabIndex = getEnvelopeTabAt(px, py);
+    if (tabIndex >= 0) {
+      if (tabIndex < 4) {
+        // Envelope tabs
+        currentEnvelope = (EnvelopeType)tabIndex;
+        currentState = ENVELOPE_EDIT;
+        selectedPoint = -1;
+        selectedCurve = -1;
+        holdingPoint = false;
+        holdingCurve = false;
         lastClickedPoint = -1;
         drawUI();
+      } else if (tabIndex == 4) {
+        // Save tab
+        if (currentState == SAVE_NAME_ENTRY) {
+          // If already in save menu, close it
+          currentState = ENVELOPE_EDIT;
+          drawUI();
+        } else {
+          // Enter save menu
+          currentState = SAVE_NAME_ENTRY;
+          cursorPosition = 0;
+          currentPatchName[0] = '\0';
+          tft.fillScreen(BG_COLOR);
+          drawTabs(false); // Draw only save/load tabs
+          drawKeyboard();
+        }
+      } else if (tabIndex == 5) {
+        // Load tab
+        if (currentState == LOAD_FILE_SELECT) {
+          // If already in load menu, close it
+          currentState = ENVELOPE_EDIT;
+          drawUI();
+        } else {
+          // Enter load menu
+          currentState = LOAD_FILE_SELECT;
+          selectedFileIndex = -1;
+          fileScrollOffset = 0;
+          tft.fillScreen(BG_COLOR);
+          drawTabs(false); // Draw only save/load tabs
+          drawFileList();
+        }
       }
       return;
     }
     
-    lastClickedPoint = pointIndex;
-    lastClickTime = now;
-    
-    selectedPoint = pointIndex;
-    holdingPoint = true;
-    holdStartTime = now;
-    drawUI();
-    return;
-  }
+    // Handle time slider interaction
+    if (currentState == ENVELOPE_EDIT) {
+      // Check for time slider interaction first, before any other interactions
+      if (draggingTimeSlider || isInTimeSlider(px, py)) {
+        draggingTimeSlider = true;
+        // Update position
+        int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
+        int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+        envelopes[currentEnvelope].totalDuration = newTime;
+        drawTimeSlider();
+        return;  // Important: stop processing other touches
+      }
+      
+      // Only if we're not touching the slider, proceed with point/curve handling
+      if (py >= ENV_VIEW_TOP && py <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT) {
+        Envelope &env = envelopes[currentEnvelope];
+        unsigned long now = millis();
         
-        int lineIndex = findNearbyLine(px, py);
-        if (lineIndex >= 0) {
-          selectedCurve = lineIndex;
-          bool curveExists = false;
-          for (auto &c : env.curves) {
-            if (c.index == lineIndex) {
-              curveExists = true;
-              break;
-            }
+        if (holdingPoint) {
+          env.points[selectedPoint].x = px;
+          env.points[selectedPoint].y = py;
+          env.points[selectedPoint].x = constrain(env.points[selectedPoint].x, 0, SCREEN_WIDTH);
+          env.points[selectedPoint].y = constrain(env.points[selectedPoint].y, ENV_VIEW_TOP, ENV_VIEW_TOP + ENV_VIEW_HEIGHT);
+          if (selectedPoint == 0) {
+            env.points[selectedPoint].x = 0;
+          } else if (selectedPoint == static_cast<int>(env.points.size()) - 1) {
+            env.points[selectedPoint].x = SCREEN_WIDTH - 1;
           }
-          if (!curveExists) {
-            env.curves.push_back({lineIndex, 0});
-          }
-          holdingCurve = true;
-          holdStartTime = now;
-          drawUI();
-          return;
-        }
-        
-        // Add a point when clicking in empty space (not on a line or point)
-        if (env.points.size() < MAX_POINTS) {
-          bool tooClose = false;
-          for (auto &pt : env.points) {
-            if (abs(pt.x - px) < POINT_RADIUS) {
-              tooClose = true;
-              break;
-            }
-          }
-          if (!tooClose) {
-            auto it = env.points.begin();
-            while (it != env.points.end() && it->x < px) ++it;
-            env.points.insert(it, {px, py});
-            removeLineOverlaps();
+          removeLineOverlaps(); // Handles drag-over deletion
+          
+          // Throttle redraw for better performance
+          unsigned long now = millis();
+          if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
+            lastDrawTime = now;
             drawUI();
+          }
+        } else if (holdingCurve) {
+          for (auto &c : env.curves) {
+            if (c.index == selectedCurve) {
+              // Get the line's start and end points
+              int x1 = env.points[c.index].x;
+              int y1 = env.points[c.index].y;
+              int x2 = env.points[c.index + 1].x;
+              int y2 = env.points[c.index + 1].y;
+              
+              // Calculate the perpendicular distance from cursor to line
+              float dx = x2 - x1;
+              float dy = y2 - y1;
+              
+              // Project cursor onto the line
+              float t = constrain(((px - x1) * dx + (py - y1) * dy) / (dx*dx + dy*dy), 0.0f, 1.0f);
+              float projX = x1 + t * dx;
+              float projY = y1 + t * dy;
+              
+              // Calculate perpendicular vector
+              float perpX = px - projX;
+              float perpY = py - projY;
+              float perpLength = sqrt(perpX*perpX + perpY*perpY);
+              
+              // Calculate offset based on perpendicular distance and projection point
+              if (perpLength > 0) {
+                // Set offset based on cursor position relative to the line
+                // We want the peak of the curve to follow the cursor
+                int midPointX = (x1 + x2) / 2;
+                float offsetScale = 2.0f * (t - 0.5f);
+                c.offset = round(perpLength * (perpX / perpLength)) - ((projX - midPointX) * offsetScale);
+              }
+              
+              // Constrain offset to prevent extreme curves
+              int xDist = x2 - x1;
+              int maxOffset = xDist / 2;
+              c.offset = constrain(c.offset, -maxOffset, maxOffset);
+              
+              // Throttle redraw for better performance
+              if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
+                lastDrawTime = now;
+                drawUI();
+              }
+              break;
+            }
+          }
+        } else {
+          // Use larger radius for all point interactions
+          int pointIndex = findNearbyPoint(px, py, DOUBLE_CLICK_RADIUS);
+          if (pointIndex >= 0) {
+            // Double-click detection
+            if (pointIndex == lastClickedPoint && (now - lastClickTime) <= DOUBLE_CLICK_TIME) {
+              // Ensure we don't delete if there are only 2 points (minimum required)
+              if (env.points.size() > 2) {
+                env.points.erase(env.points.begin() + pointIndex);
+                lastClickedPoint = -1;
+                drawUI();
+              }
+              return;
+            }
+            
+            lastClickedPoint = pointIndex;
+            lastClickTime = now;
+            
+            selectedPoint = pointIndex;
+            holdingPoint = true;
+            holdStartTime = now;
+            drawUI();
+            return;
+          }
+          
+          int lineIndex = findNearbyLine(px, py);
+          if (lineIndex >= 0) {
+            selectedCurve = lineIndex;
+            bool curveExists = false;
+            for (auto &c : env.curves) {
+              if (c.index == lineIndex) {
+                curveExists = true;
+                break;
+              }
+            }
+            if (!curveExists) {
+              env.curves.push_back({lineIndex, 0});
+            }
+            holdingCurve = true;
+            holdStartTime = now;
+            drawUI();
+            return;
+          }
+          
+          // Add a point when clicking in empty space (not on a line or point)
+          if (env.points.size() < MAX_POINTS) {
+            bool tooClose = false;
+            for (auto &pt : env.points) {
+              if (abs(pt.x - px) < POINT_RADIUS) {
+                tooClose = true;
+                break;
+              }
+            }
+            if (!tooClose) {
+              auto it = env.points.begin();
+              while (it != env.points.end() && it->x < px) ++it;
+              env.points.insert(it, {px, py});
+              removeLineOverlaps();
+              drawUI();
+            }
           }
         }
       }
