@@ -10,6 +10,16 @@
 #define CS_PIN  7   // Touchscreen CS
 #define TIRQ_PIN 2  // Touchscreen IRQ
 
+// Hardware input pins
+#define TRIG1_PIN 3   // Trigger input 1
+#define TRIG2_PIN 4   // Trigger input 2
+#define TRIG3_PIN 5   // Trigger input 3
+#define TRIG4_PIN 6   // Trigger input 4
+#define BUTTON_PIN 8  // Manual trigger button
+#define POT1_PIN A0   // Pitch attack potentiometer (first point Y)
+#define POT2_PIN A1   // Total time potentiometer
+#define POT3_PIN A2   // Noise volume potentiometer
+
 // Screen dimensions
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -28,15 +38,18 @@
 #define LINE_SELECT_RADIUS 15
 #define HOLD_DELAY 300
 #define JITTER_BUFFER_SIZE 4
-#define TIME_SLIDER_WIDTH 180
+#define TIME_SLIDER_WIDTH 160
 #define TIME_SLIDER_HEIGHT 20
-#define TIME_SLIDER_X 70
+#define TIME_SLIDER_X 50        // Moved to left side
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
-#define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
-#define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
+#define TIME_SLIDER_HANDLE_WIDTH 34        // Wider oval handle
+#define TIME_SLIDER_HANDLE_HEIGHT 20       // Taller oval handle
 #define TIME_MIN_VALUE 50                  // 50ms minimum time
 #define TIME_MAX_VALUE 4200                // 4200ms maximum time
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
+#define CHECKBOX_SIZE 20      // Size of link env checkbox
+#define CHECKBOX_X (SCREEN_WIDTH - 60)     // Checkbox X position
+#define CHECKBOX_Y (SCREEN_HEIGHT - 25)    // Checkbox Y position
 
 // Keyboard Constants
 #define KEYBOARD_TOP (TOP_BAR_HEIGHT + 5)
@@ -56,18 +69,29 @@
 #define TAB_ACTIVE 0x5ACB    // Brighter blue
 #define SLIDER_BG 0x3186     // Dark gray
 #define SLIDER_FG 0x5ACB     // Brighter blue
+#define CHECKBOX_BORDER 0xFFFF // White
+#define CHECKBOX_CHECKED 0x07E0 // Green
+#define DELETE_BTN_COLOR TFT_RED // Red for delete button
 
 // UI States
 enum UIState { 
   ENVELOPE_EDIT, 
   SAVE_NAME_ENTRY, 
-  LOAD_FILE_SELECT 
+  LOAD_FILE_SELECT,
+  DELETE_CONFIRM
 };
 
 // Initialize hardware
 TFT_eSPI tft = TFT_eSPI();
 XPT2046_Touchscreen ts(CS_PIN, TIRQ_PIN);
 Adafruit_MCP4728 dac;
+
+// Trigger state
+struct TriggerState {
+  bool active;             // Is the trigger currently active?
+  unsigned long startTime; // When was the trigger activated?
+  bool processed;          // Has this trigger been processed this cycle?
+};
 
 // Envelope data structure
 struct Point {
@@ -80,23 +104,28 @@ struct Curve {
 };
 
 // Four envelopes (Pitch, Amp, Filter, Noise)
-enum EnvelopeType { PITCH, AMP, FILTER, NOISE };
-const char* ENV_NAMES[] = {"PITCH", "AMP", "FILTER", "NOISE"};
-const char* ALL_TAB_NAMES[] = {"PITCH", "AMP", "FILTER", "NOISE", "SAVE", "LOAD"};
+enum EnvelopeType { ENV1, ENV2, ENV3, ENV4 };
+const char* LINKED_ENV_NAMES[] = {"PITCH", "AMP", "FILTER", "NOISE"};
+const char* UNLINKED_ENV_NAMES[] = {"ENV 1", "ENV 2", "ENV 3", "ENV 4"};
+const char* TAB_NAMES[] = {"SAVE", "LOAD"};
 const uint16_t ENV_COLORS[] = {0x07FF, 0x07E0, 0xFD20, 0xF800}; // Cyan, Green, Yellow, Red
-const uint16_t ALL_TAB_COLORS[] = {0x07FF, 0x07E0, 0xFD20, 0xF800, 0xFFFF, 0xFFFF}; // Cyan, Green, Yellow, Red, White, White
 
 class Envelope {
 public:
   std::vector<Point> points;
   std::vector<Curve> curves;
-  int totalDuration = 1000;  // Duration in milliseconds
+  int totalDuration = 1000;     // Duration in milliseconds
+  float currentValue = 0.0f;    // Current output value
+  bool triggered = false;       // Is this envelope currently triggered?
+  unsigned long triggerTime = 0;// When was this envelope triggered
+  int triggerSource = 0;        // Which trigger input controls this envelope (0-3)
 
   Envelope() {
     points.push_back({0, ENV_VIEW_HEIGHT * 3/4});
     points.push_back({ENV_VIEW_WIDTH - 1, ENV_VIEW_HEIGHT * 3/4});
   }
 
+  // Get value at specific time offset
   float getValue(float time) {
     int xPos = time * ENV_VIEW_WIDTH;
     for (size_t i = 1; i < points.size(); i++) {
@@ -108,7 +137,7 @@ public:
         bool hasCurve = false;
         int curveOffset = 0;
         for (auto &c : curves) {
-          if (c.index == static_cast<int>(i) - 1) { // Fix signedness warning
+          if (c.index == static_cast<int>(i) - 1) {
             hasCurve = true;
             curveOffset = c.offset;
             break;
@@ -130,11 +159,35 @@ public:
     }
     return 1.0 - (points.back().y - ENV_VIEW_TOP) / (float)ENV_VIEW_HEIGHT;
   }
+  
+  // Process envelope based on current trigger state
+  void process(unsigned long currentTime) {
+    if (!triggered) {
+      currentValue = 0.0f;
+      return;
+    }
+    
+    unsigned long elapsed = currentTime - triggerTime;
+    if (elapsed >= (unsigned long)totalDuration) {
+      triggered = false;
+      currentValue = 0.0f;
+      return;
+    }
+    
+    float progress = (float)elapsed / (float)totalDuration;
+    currentValue = getValue(progress);
+  }
+  
+  // Trigger the envelope
+  void trigger(unsigned long currentTime) {
+    triggered = true;
+    triggerTime = currentTime;
+  }
 };
 
 // Global variables
 Envelope envelopes[4];
-EnvelopeType currentEnvelope = PITCH;
+EnvelopeType currentEnvelope = ENV1;
 UIState currentState = ENVELOPE_EDIT;
 int selectedPoint = -1;
 int selectedCurve = -1;
@@ -145,6 +198,17 @@ unsigned long holdStartTime = 0;
 unsigned long lastClickTime = 0;
 unsigned long lastDrawTime = 0;
 unsigned long lastKeyboardTouchTime = 0;
+unsigned long lastTriggerTime[4] = {0, 0, 0, 0};
+bool linkEnvelopesMode = true;    // Default to linked mode
+int selectedFileIndex = -1;       // Currently selected file
+int fileScrollOffset = 0;         // Scroll offset for file list
+TriggerState triggerStates[4];    // State of the 4 trigger inputs
+bool buttonState = false;         // Manual trigger button state
+int pot1Value = 0;                // Pitch attack pot value
+int pot2Value = 0;                // Total time pot value
+int pot3Value = 0;                // Noise volume pot value
+bool manualTrigger = false;       // Manual trigger button state
+char fileToDelete[20] = "";       // Filename for deletion confirmation
 #define KEYBOARD_DEBOUNCE_TIME 300  // Minimum time between key presses in ms
 int lastClickedPoint = -1;
 std::vector<int> jitterBufferX;
@@ -152,21 +216,25 @@ std::vector<int> jitterBufferY;
 char currentPatchName[20] = ""; // Buffer for patch name
 int cursorPosition = 0;         // Cursor position for text entry
 File patchDir;                  // For file browsing
-int selectedFileIndex = -1;     // Currently selected file
-int fileScrollOffset = 0;       // Scroll offset for file list
 bool needFullRedraw = true;
 #define MIN_REDRAW_INTERVAL 50  // Minimum time between redraws in ms
+#define TRIGGER_DURATION 50     // Duration of trigger pulse in ms
 
 // Function prototypes
 void drawUI(bool fullRedraw = true);
 void drawEnvelope(EnvelopeType envType);
-void drawTabs(bool includeEnvelopeTabs = true);
+void drawTabs();
 void drawTimeSlider();
+void drawLinkCheckbox();
 void drawGrid();
 int findNearbyPoint(int x, int y, int radius = POINT_RADIUS);
 int findNearbyLine(int x, int y);
 void processTouch();
 void updateOutputs();
+void checkTriggers();
+void processTriggers();
+void readPotentiometers();
+void checkButton();
 void removeLineOverlaps();
 int stableX(int rawX);
 int stableY(int rawY);
@@ -174,23 +242,55 @@ void drawKeyboard();
 void processKeyboardTouch(int px, int py);
 void saveCurrentPatch();
 void loadSelectedPatch();
+void deleteSelectedPatch();
+void showDeleteConfirmation(const char* filename);
 void drawFileList();
 void processFileListTouch(int px, int py);
 void updateEnvelopePoint(int pointIndex);
 bool readLine(File &file, char* buffer, int maxLen);
 void printDirectory(File dir, int numTabs);
 void loadDefaultPatch();
+bool isInTimeSlider(int x, int y);
+bool isInLinkCheckbox(int x, int y);
+bool isInDeleteButton(int px, int py);
+void syncLinkedEnvelopes();
+const char* getEnvelopeName(int envIndex);
 void setup() {
   Serial.begin(115200);
   delay(1000); // Give serial time to start
   Serial.println("Starting setup...");
   
+  // Initialize display
   tft.init();
   tft.setRotation(3);
   tft.fillScreen(BG_COLOR);
   
+  // Initialize touchscreen
   ts.begin();
   ts.setRotation(1);
+  
+  // Initialize hardware inputs
+  pinMode(TRIG1_PIN, INPUT_PULLUP);
+  pinMode(TRIG2_PIN, INPUT_PULLUP);
+  pinMode(TRIG3_PIN, INPUT_PULLUP);
+  pinMode(TRIG4_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(POT1_PIN, INPUT);
+  pinMode(POT2_PIN, INPUT);
+  pinMode(POT3_PIN, INPUT);
+  
+  // Initialize trigger states
+  for (int i = 0; i < 4; i++) {
+    triggerStates[i].active = false;
+    triggerStates[i].startTime = 0;
+    triggerStates[i].processed = false;
+  }
+  
+  // Set default trigger sources
+  envelopes[0].triggerSource = 0; // ENV1 triggered by input 1
+  envelopes[1].triggerSource = 1; // ENV2 triggered by input 2
+  envelopes[2].triggerSource = 2; // ENV3 triggered by input 3
+  envelopes[3].triggerSource = 3; // ENV4 triggered by input 4
   
   // DAC initialization
   if (!dac.begin()) {
@@ -251,14 +351,185 @@ void setup() {
   // Load default patch
   loadDefaultPatch();
   
+  // Initialize with linked mode by default
+  linkEnvelopesMode = true;
+  
   // Draw the UI
   drawUI();
 }
 
 void loop() {
-  processTouch();
+  // Read potentiometers
+  readPotentiometers();
+  
+  // Check physical button
+  checkButton();
+  
+  // Check hardware triggers
+  checkTriggers();
+  
+  // Process envelope triggers and values
+  processTriggers();
+  
+  // Update DAC outputs
   updateOutputs();
-  delay(10);
+  
+  // Process touch events
+  processTouch();
+  
+  delay(5); // Slight delay to prevent overloading
+}
+
+// Get the current name of the envelope based on link mode
+const char* getEnvelopeName(int envIndex) {
+  if (linkEnvelopesMode) {
+    return LINKED_ENV_NAMES[envIndex];
+  } else {
+    return UNLINKED_ENV_NAMES[envIndex];
+  }
+}
+
+// Read analog potentiometers
+void readPotentiometers() {
+  // Read potentiometer values with simple filtering
+  int newPot1 = analogRead(POT1_PIN);
+  int newPot2 = analogRead(POT2_PIN);
+  int newPot3 = analogRead(POT3_PIN);
+  
+  // Apply smoothing
+  pot1Value = (pot1Value * 3 + newPot1) / 4;
+  pot2Value = (pot2Value * 3 + newPot2) / 4;
+  pot3Value = (pot3Value * 3 + newPot3) / 4;
+  
+  // Apply pot2 value to envelope durations based on mode
+  int newDuration = map(pot2Value, 0, 1023, TIME_MIN_VALUE, TIME_MAX_VALUE);
+  
+  if (linkEnvelopesMode) {
+    // In linked mode, update env 1 & 2 together, and env 3 & 4 together
+    if (abs(envelopes[ENV1].totalDuration - newDuration) > 10) {
+      envelopes[ENV1].totalDuration = newDuration;
+      envelopes[ENV2].totalDuration = newDuration;
+      
+      // Redraw if this is the current envelope
+      if (currentEnvelope == ENV1 || currentEnvelope == ENV2) {
+        drawTimeSlider();
+      }
+    }
+  } else {
+    // In unlinked mode, only update env 1
+    if (abs(envelopes[ENV1].totalDuration - newDuration) > 10) {
+      envelopes[ENV1].totalDuration = newDuration;
+      
+      // Redraw if this is the current envelope
+      if (currentEnvelope == ENV1) {
+        drawTimeSlider();
+      }
+    }
+  }
+  
+  // Apply pot1 to modify first point Y position of pitch/env1
+  if (envelopes[ENV1].points.size() > 0) {
+    int newY = map(pot1Value, 0, 1023, ENV_VIEW_TOP, ENV_VIEW_TOP + ENV_VIEW_HEIGHT);
+    if (abs(envelopes[ENV1].points[0].y - newY) > 5) {
+      envelopes[ENV1].points[0].y = newY;
+      
+      // Redraw if this is the current envelope
+      if (currentEnvelope == ENV1) {
+        drawUI(false);
+      }
+    }
+  }
+  
+  // Apply pot3 to noise volume (envelope scaling for env 3)
+  // We'll implement this in the updateOutputs function
+}
+
+// Check the state of the manual trigger button
+void checkButton() {
+  // Read button (active low since it's using pull-up)
+  bool currentButtonState = !digitalRead(BUTTON_PIN);
+  
+  // Detect rising edge (button press)
+  if (currentButtonState && !buttonState) {
+    Serial.println("Button pressed - manual trigger");
+    // Trigger all envelopes
+    unsigned long now = millis();
+    for (int i = 0; i < 4; i++) {
+      envelopes[i].trigger(now);
+    }
+    manualTrigger = true;
+  } else if (!currentButtonState && buttonState) {
+    // Button released
+    manualTrigger = false;
+  }
+  
+  // Update button state
+  buttonState = currentButtonState;
+}
+
+// Check the hardware trigger inputs
+void checkTriggers() {
+  unsigned long now = millis();
+  
+  // Check each hardware trigger input
+  for (int i = 0; i < 4; i++) {
+    // Read the trigger pin (active low because of pull-up)
+    bool trigActive = false;
+    
+    switch (i) {
+      case 0: trigActive = !digitalRead(TRIG1_PIN); break;
+      case 1: trigActive = !digitalRead(TRIG2_PIN); break;
+      case 2: trigActive = !digitalRead(TRIG3_PIN); break;
+      case 3: trigActive = !digitalRead(TRIG4_PIN); break;
+    }
+    
+    // Handle rising edge (new trigger)
+    if (trigActive && !triggerStates[i].active) {
+      triggerStates[i].active = true;
+      triggerStates[i].startTime = now;
+      triggerStates[i].processed = false;
+      Serial.print("Trigger ");
+      Serial.print(i+1);
+      Serial.println(" activated");
+    }
+    // Handle falling edge (trigger release) or timeout
+    else if (triggerStates[i].active && 
+             (!trigActive || (now - triggerStates[i].startTime > TRIGGER_DURATION))) {
+      triggerStates[i].active = false;
+      Serial.print("Trigger ");
+      Serial.print(i+1);
+      Serial.println(" deactivated");
+    }
+  }
+}
+
+// Process trigger events for envelopes
+void processTriggers() {
+  unsigned long now = millis();
+  
+  // Process all envelopes
+  for (int i = 0; i < 4; i++) {
+    // Determine which trigger source to use
+    int trigSource = linkEnvelopesMode ? 0 : envelopes[i].triggerSource;
+    
+    // Check if this envelope should be triggered
+    if (triggerStates[trigSource].active && !triggerStates[trigSource].processed) {
+      envelopes[i].trigger(now);
+      Serial.print("Envelope ");
+      Serial.print(i+1);
+      Serial.println(" triggered");
+    }
+    
+    // Update the envelope state
+    envelopes[i].process(now);
+  }
+  
+  // Mark triggers as processed
+  for (int i = 0; i < 4; i++) {
+    if (triggerStates[i].active) {
+      triggerStates[i].processed = true;
+    }
+  }
 }
 
 void drawUI(bool fullRedraw) {
@@ -268,8 +539,28 @@ void drawUI(bool fullRedraw) {
       drawGrid();
       drawTabs();
       drawTimeSlider();
+      drawLinkCheckbox();
     }
     drawEnvelope(currentEnvelope);
+  } else if (currentState == DELETE_CONFIRM) {
+    // Draw delete confirmation dialog
+    tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, SCREEN_HEIGHT/3, BG_COLOR);
+    tft.drawRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, SCREEN_HEIGHT/3, TEXT_COLOR);
+    
+    tft.setTextColor(TEXT_COLOR);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextSize(1);
+    tft.drawString("Delete patch?", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
+    tft.drawString(fileToDelete, SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 40);
+    
+    // Yes button
+    tft.fillRoundRect(SCREEN_WIDTH/4 + 20, SCREEN_HEIGHT/3 + 70, 60, 30, 5, 0x07E0);
+    tft.setTextColor(0x0000);
+    tft.drawString("YES", SCREEN_WIDTH/4 + 50, SCREEN_HEIGHT/3 + 85);
+    
+    // No button
+    tft.fillRoundRect(SCREEN_WIDTH/2 + 20, SCREEN_HEIGHT/3 + 70, 60, 30, 5, TFT_RED);
+    tft.drawString("NO", SCREEN_WIDTH/2 + 50, SCREEN_HEIGHT/3 + 85);
   }
 }
 
@@ -294,7 +585,7 @@ void drawEnvelope(EnvelopeType envType) {
     bool hasCurve = false;
     int curveOffset = 0;
     for (auto &c : env.curves) {
-      if (c.index == static_cast<int>(i) - 1) { // Fix signedness warning
+      if (c.index == static_cast<int>(i) - 1) {
         hasCurve = true;
         curveOffset = c.offset;
         break;
@@ -307,7 +598,7 @@ void drawEnvelope(EnvelopeType envType) {
       int maxOffset = xDist / 2;
       curveOffset = constrain(curveOffset, -maxOffset, maxOffset);
       for (auto &c : env.curves) {
-        if (c.index == static_cast<int>(i) - 1) { // Fix signedness warning
+        if (c.index == static_cast<int>(i) - 1) {
           c.offset = curveOffset;
           break;
         }
@@ -332,7 +623,7 @@ void drawEnvelope(EnvelopeType envType) {
   
   // Draw points
   for (size_t i = 0; i < env.points.size(); i++) {
-    if (static_cast<int>(i) == selectedPoint && holdingPoint) { // Fix signedness warning
+    if (static_cast<int>(i) == selectedPoint && holdingPoint) {
       tft.fillCircle(env.points[i].x, env.points[i].y, POINT_RADIUS, SELECTED_POINT_COLOR);
     } else {
       tft.fillCircle(env.points[i].x, env.points[i].y, POINT_RADIUS, POINT_COLOR);
@@ -341,39 +632,42 @@ void drawEnvelope(EnvelopeType envType) {
   }
 }
 
-void drawTabs(bool includeEnvelopeTabs) {
+void drawTabs() {
   tft.setTextColor(TEXT_COLOR);
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(1);
   
-  int startTab = 0;
-  int endTab = NUM_TABS;
-  
-  if (!includeEnvelopeTabs) {
-    startTab = 4; // Only draw SAVE and LOAD tabs
-  }
-  
-  for (int i = startTab; i < endTab; i++) {
+  // Envelope tabs (first 4)
+  for (int i = 0; i < 4; i++) {
     int x = i * TAB_WIDTH;
     int y = TOP_BAR_HEIGHT / 2;
-    uint16_t tabColor = TAB_INACTIVE;
+    uint16_t tabColor = (currentState == ENVELOPE_EDIT && i == currentEnvelope) ? TAB_ACTIVE : TAB_INACTIVE;
+    uint16_t lineColor = ENV_COLORS[i];
     
-    if (currentState == ENVELOPE_EDIT && i == currentEnvelope) {
-      tabColor = TAB_ACTIVE;
-    } else if (currentState == SAVE_NAME_ENTRY && i == 4) { // SAVE tab
-      tabColor = TAB_ACTIVE;
-    } else if (currentState == LOAD_FILE_SELECT && i == 5) { // LOAD tab
-      tabColor = TAB_ACTIVE;
-    }
-    
-    uint16_t lineColor = i < 4 ? ENV_COLORS[i] : ALL_TAB_COLORS[i];
     tft.fillRoundRect(x + 2, 2, TAB_WIDTH - 4, TOP_BAR_HEIGHT - 4, 4, tabColor);
     
     if (i == currentEnvelope && currentState == ENVELOPE_EDIT) {
       tft.drawLine(x + 2, TOP_BAR_HEIGHT - 2, x + TAB_WIDTH - 2, TOP_BAR_HEIGHT - 2, lineColor);
     }
     
-    tft.drawString(ALL_TAB_NAMES[i], x + TAB_WIDTH/2, y);
+    // Use appropriate name based on link mode
+    tft.drawString(getEnvelopeName(i), x + TAB_WIDTH/2, y);
+  }
+  
+  // Save and Load tabs (last 2)
+  for (int i = 0; i < 2; i++) {
+    int index = i + 4;
+    int x = index * TAB_WIDTH;
+    int y = TOP_BAR_HEIGHT / 2;
+    uint16_t tabColor = TAB_INACTIVE;
+    
+    if ((i == 0 && currentState == SAVE_NAME_ENTRY) || 
+        (i == 1 && currentState == LOAD_FILE_SELECT)) {
+      tabColor = TAB_ACTIVE;
+    }
+    
+    tft.fillRoundRect(x + 2, 2, TAB_WIDTH - 4, TOP_BAR_HEIGHT - 4, 4, tabColor);
+    tft.drawString(TAB_NAMES[i], x + TAB_WIDTH/2, y);
   }
 }
 
@@ -433,6 +727,43 @@ void drawTimeSlider() {
   tft.drawString(timeText, handleX, TIME_SLIDER_Y);
 }
 
+void drawLinkCheckbox() {
+  // Draw label
+  tft.setTextColor(TEXT_COLOR);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextSize(1);
+  tft.drawString("Link Env", CHECKBOX_X - 10, CHECKBOX_Y);
+  
+  // Draw checkbox border
+  tft.drawRect(CHECKBOX_X, CHECKBOX_Y - CHECKBOX_SIZE/2, 
+               CHECKBOX_SIZE, CHECKBOX_SIZE, CHECKBOX_BORDER);
+  
+  // Fill if checked
+  if (linkEnvelopesMode) {
+    tft.fillRect(CHECKBOX_X + 3, CHECKBOX_Y - CHECKBOX_SIZE/2 + 3, 
+                CHECKBOX_SIZE - 6, CHECKBOX_SIZE - 6, CHECKBOX_CHECKED);
+  }
+}
+
+bool isInLinkCheckbox(int x, int y) {
+  return (x >= CHECKBOX_X && x <= CHECKBOX_X + CHECKBOX_SIZE &&
+          y >= CHECKBOX_Y - CHECKBOX_SIZE/2 && y <= CHECKBOX_Y + CHECKBOX_SIZE/2);
+}
+
+void syncLinkedEnvelopes() {
+  if (linkEnvelopesMode) {
+    // Sync durations within groups when link mode is activated
+    if (currentEnvelope == ENV1 || currentEnvelope == ENV2) {
+      // Sync ENV1 and ENV2
+      envelopes[ENV1].totalDuration = envelopes[currentEnvelope].totalDuration;
+      envelopes[ENV2].totalDuration = envelopes[currentEnvelope].totalDuration;
+    } else if (currentEnvelope == ENV3 || currentEnvelope == ENV4) {
+      // Sync ENV3 and ENV4
+      envelopes[ENV3].totalDuration = envelopes[currentEnvelope].totalDuration;
+      envelopes[ENV4].totalDuration = envelopes[currentEnvelope].totalDuration;
+    }
+  }
+}
 int findNearbyPoint(int x, int y, int radius) {
   Envelope &env = envelopes[currentEnvelope];
   int closestPoint = -1;
@@ -449,6 +780,7 @@ int findNearbyPoint(int x, int y, int radius) {
   }
   return closestPoint;
 }
+
 int findNearbyLine(int x, int y) {
   Envelope &env = envelopes[currentEnvelope];
   for (size_t i = 1; i < env.points.size(); i++) {
@@ -489,13 +821,19 @@ bool isInTimeSlider(int x, int y) {
 
 int getEnvelopeTabAt(int x, int y) {
   if (y <= TOP_BAR_HEIGHT) {
-    for (int i = 0; i < NUM_TABS; i++) {
-      if (x >= i * TAB_WIDTH && x < (i+1) * TAB_WIDTH) {
-        return i;
-      }
+    int index = x / TAB_WIDTH;
+    if (index >= 0 && index < NUM_TABS) {
+      return index;
     }
   }
   return -1;
+}
+
+bool isInDeleteButton(int px, int py) {
+  // Check if point is in delete button area in file list view
+  return (currentState == LOAD_FILE_SELECT && 
+          px >= SCREEN_WIDTH/2 + 70 && px <= SCREEN_WIDTH/2 + 130 &&
+          py >= SCREEN_HEIGHT - 40 && py <= SCREEN_HEIGHT - 10);
 }
 
 void removeLineOverlaps() {
@@ -511,7 +849,7 @@ void removeLineOverlaps() {
     }
   }
   for (size_t i = 0; i < env.curves.size(); ) {
-    if (env.curves[i].index >= static_cast<int>(env.points.size()) - 1) { // Fix signedness warning
+    if (env.curves[i].index >= static_cast<int>(env.points.size()) - 1) {
       env.curves.erase(env.curves.begin() + i);
     } else {
       ++i;
@@ -520,20 +858,32 @@ void removeLineOverlaps() {
 }
 
 void updateOutputs() {
-  float values[4];
+  float dacValues[4];
+  
+  // Get current envelope values
   for (int i = 0; i < 4; i++) {
-    unsigned long now = millis();
-    float phase = (now % envelopes[i].totalDuration) / (float)envelopes[i].totalDuration;
-    values[i] = envelopes[i].getValue(phase);
+    // Get the raw value from the envelope
+    float rawValue = envelopes[i].currentValue;
+    
+    // Apply noise volume adjustment from pot3 to ENV3 (Noise)
+    if (i == ENV3) {
+      float volumeFactor = pot3Value / 1023.0;
+      dacValues[i] = rawValue * volumeFactor;
+    } else {
+      dacValues[i] = rawValue;
+    }
+    
+    // Convert to DAC range (0-4095)
+    uint16_t dacVal = constrain(dacValues[i] * 4095, 0, 4095);
+    
+    // Send to DAC
+    switch (i) {
+      case 0: dac.setChannelValue(MCP4728_CHANNEL_A, dacVal); break;
+      case 1: dac.setChannelValue(MCP4728_CHANNEL_B, dacVal); break;
+      case 2: dac.setChannelValue(MCP4728_CHANNEL_C, dacVal); break;
+      case 3: dac.setChannelValue(MCP4728_CHANNEL_D, dacVal); break;
+    }
   }
-  uint16_t dacValues[4];
-  for (int i = 0; i < 4; i++) {
-    dacValues[i] = values[i] * 4095;
-  }
-  dac.setChannelValue(MCP4728_CHANNEL_A, dacValues[0]);
-  dac.setChannelValue(MCP4728_CHANNEL_B, dacValues[1]);
-  dac.setChannelValue(MCP4728_CHANNEL_C, dacValues[2]);
-  dac.setChannelValue(MCP4728_CHANNEL_D, dacValues[3]);
 }
 
 int stableX(int rawX) {
@@ -918,14 +1268,44 @@ void drawFileList() {
   
   // Draw load button if we have files
   if (patchCount > 0) {
-    tft.fillRoundRect(SCREEN_WIDTH/2 - 40, SCREEN_HEIGHT - 40, 80, 30, 5, 0x04A0);
+    tft.fillRoundRect(SCREEN_WIDTH/2 - 70, SCREEN_HEIGHT - 40, 60, 30, 5, 0x04A0);
     tft.setTextColor(TEXT_COLOR);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString("LOAD", SCREEN_WIDTH/2, SCREEN_HEIGHT - 25);
+    tft.drawString("LOAD", SCREEN_WIDTH/2 - 40, SCREEN_HEIGHT - 25);
+    
+    // Draw delete button
+    tft.fillRoundRect(SCREEN_WIDTH/2 + 10, SCREEN_HEIGHT - 40, 60, 30, 5, DELETE_BTN_COLOR);
+    tft.setTextColor(TEXT_COLOR);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("DELETE", SCREEN_WIDTH/2 + 40, SCREEN_HEIGHT - 25);
   }
 }
 
 void processFileListTouch(int px, int py) {
+  // Check if we're in delete confirmation dialog
+  if (currentState == DELETE_CONFIRM) {
+    // Yes button
+    if (px >= SCREEN_WIDTH/4 + 20 && px <= SCREEN_WIDTH/4 + 80 && 
+        py >= SCREEN_HEIGHT/3 + 70 && py <= SCREEN_HEIGHT/3 + 100) {
+      // Delete the file
+      deleteSelectedPatch();
+      currentState = LOAD_FILE_SELECT;
+      drawFileList();
+      return;
+    }
+    
+    // No button
+    if (px >= SCREEN_WIDTH/2 + 20 && px <= SCREEN_WIDTH/2 + 80 && 
+        py >= SCREEN_HEIGHT/3 + 70 && py <= SCREEN_HEIGHT/3 + 100) {
+      // Cancel deletion
+      currentState = LOAD_FILE_SELECT;
+      drawFileList();
+      return;
+    }
+    
+    return; // Ignore other touches during confirmation
+  }
+  
   // Handle scrolling
   if (px > SCREEN_WIDTH - 40 && py < TOP_BAR_HEIGHT + 60 && fileScrollOffset > 0) {
     // Scroll up
@@ -948,6 +1328,7 @@ void processFileListTouch(int px, int py) {
     // Check if this is a valid file index
     bool validIndex = false;
     int count = 0;
+    char filename[50] = "";
     
     if (SD.exists("patches")) {
       patchDir = SD.open("patches");
@@ -960,8 +1341,11 @@ void processFileListTouch(int px, int py) {
         if (!entry.isDirectory() && String(entry.name()).endsWith(".kck")) {
           if (count == fileIndex) {
             validIndex = true;
+            strcpy(filename, entry.name());
             Serial.print("Selected file index: ");
             Serial.println(fileIndex);
+            Serial.print("File: ");
+            Serial.println(filename);
             break;
           }
           count++;
@@ -973,6 +1357,12 @@ void processFileListTouch(int px, int py) {
     
     if (validIndex) {
       selectedFileIndex = fileIndex;
+      // Strip extension for display
+      int nameLen = strlen(filename);
+      if (nameLen > 4) {
+        filename[nameLen - 4] = '\0';
+        strcpy(fileToDelete, filename);
+      }
       drawFileList();
       return; // Don't process load button in the same touch
     }
@@ -980,13 +1370,96 @@ void processFileListTouch(int px, int py) {
   
   // Handle load button - only if we have a valid selection
   if (py > SCREEN_HEIGHT - 40 && py < SCREEN_HEIGHT - 10 &&
-      px > SCREEN_WIDTH/2 - 40 && px < SCREEN_WIDTH/2 + 40 && 
+      px > SCREEN_WIDTH/2 - 70 && px < SCREEN_WIDTH/2 - 10 && 
       selectedFileIndex >= 0) {
     Serial.print("Loading selected patch: ");
     Serial.println(selectedFileIndex);
     loadSelectedPatch();
     currentState = ENVELOPE_EDIT;
     drawUI();
+    return;
+  }
+  
+  // Handle delete button
+  if (py > SCREEN_HEIGHT - 40 && py < SCREEN_HEIGHT - 10 &&
+      px > SCREEN_WIDTH/2 + 10 && px < SCREEN_WIDTH/2 + 70 && 
+      selectedFileIndex >= 0) {
+    Serial.print("Delete selected patch: ");
+    Serial.println(fileToDelete);
+    showDeleteConfirmation(fileToDelete);
+    return;
+  }
+}
+
+void showDeleteConfirmation(const char* filename) {
+  currentState = DELETE_CONFIRM;
+  drawUI(true);
+}
+
+void deleteSelectedPatch() {
+  if (selectedFileIndex < 0) return;
+  
+  // Find the selected file by index
+  if (SD.exists("patches")) {
+    patchDir = SD.open("patches");
+    File entry;
+    int fileCount = 0;
+    char filename[50] = "";
+    
+    while (true) {
+      entry = patchDir.openNextFile();
+      if (!entry) break;
+      
+      if (!entry.isDirectory()) {
+        const char* entryName = entry.name();
+        int nameLen = strlen(entryName);
+        if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
+          if (fileCount == selectedFileIndex) {
+            strcpy(filename, entryName);
+            Serial.print("Found file to delete: ");
+            Serial.println(filename);
+            entry.close();
+            break;
+          }
+          fileCount++;
+        }
+      }
+      entry.close();
+    }
+    patchDir.close();
+    
+    if (strlen(filename) > 0) {
+      // Construct full path to file
+      char fullPath[100] = "patches/";
+      strcat(fullPath, filename);
+      
+      // Delete the file
+      if (SD.remove(fullPath)) {
+        Serial.println("File deleted successfully");
+        
+        // Show success message
+        tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, 0x07E0);
+        tft.setTextColor(0x0000);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextSize(1);
+        tft.drawString("PATCH DELETED", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
+        delay(1000);
+        
+        // Reset selection
+        selectedFileIndex = -1;
+        fileScrollOffset = 0;
+      } else {
+        Serial.println("Failed to delete file");
+        
+        // Show error message
+        tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, TFT_RED);
+        tft.setTextColor(TEXT_COLOR);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextSize(1);
+        tft.drawString("DELETE ERROR", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
+        delay(1000);
+      }
+    }
   }
 }
 
@@ -1021,12 +1494,18 @@ void saveCurrentPatch() {
     patchFile.println("KICK_PATCH");
     patchFile.println("VERSION:1.0");
     
+    // Save link mode
+    patchFile.print("LINK_MODE:");
+    patchFile.println(linkEnvelopesMode ? "1" : "0");
+    
     // Save each envelope
     for (int e = 0; e < 4; e++) {
       patchFile.print("ENVELOPE:");
       patchFile.println(e);
       patchFile.print("DURATION:");
       patchFile.println(envelopes[e].totalDuration);
+      patchFile.print("TRIGGER_SOURCE:");
+      patchFile.println(envelopes[e].triggerSource);
       
       // Save points
       patchFile.print("POINTS:");
@@ -1130,6 +1609,14 @@ void loadSelectedPatch() {
           // Skip version line
           readLine(patchFile, buffer, sizeof(buffer));
           
+          // Read link mode if present
+          if (readLine(patchFile, buffer, sizeof(buffer)) && 
+              strncmp(buffer, "LINK_MODE:", 10) == 0) {
+            linkEnvelopesMode = (buffer[10] == '1');
+            Serial.print("Loaded link mode: ");
+            Serial.println(linkEnvelopesMode);
+          }
+          
           // Read envelopes
           while (patchFile.available()) {
             if (!readLine(patchFile, buffer, sizeof(buffer))) {
@@ -1151,6 +1638,14 @@ void loadSelectedPatch() {
                 Serial.print(envIndex);
                 Serial.print(": ");
                 Serial.println(duration);
+              }
+              
+              // Read trigger source if present
+              if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                  strncmp(buffer, "TRIGGER_SOURCE:", 15) == 0) {
+                int source = atoi(buffer + 15);
+                source = constrain(source, 0, 3);
+                envelopes[envIndex].triggerSource = source;
               }
               
               // Read points
@@ -1195,6 +1690,11 @@ void loadSelectedPatch() {
                 }
               }
             }
+          }
+          
+          // Sync linked envelopes if in link mode
+          if (linkEnvelopesMode) {
+            syncLinkedEnvelopes();
           }
           
           Serial.println("Patch loaded successfully");
@@ -1273,6 +1773,14 @@ void loadDefaultPatch() {
         // Skip version line
         readLine(patchFile, buffer, sizeof(buffer));
         
+        // Read link mode if present
+        if (readLine(patchFile, buffer, sizeof(buffer)) && 
+            strncmp(buffer, "LINK_MODE:", 10) == 0) {
+          linkEnvelopesMode = (buffer[10] == '1');
+          Serial.print("Loaded link mode: ");
+          Serial.println(linkEnvelopesMode);
+        }
+        
         // Read envelopes
         while (patchFile.available()) {
           if (!readLine(patchFile, buffer, sizeof(buffer))) {
@@ -1294,6 +1802,14 @@ void loadDefaultPatch() {
               Serial.print(envIndex);
               Serial.print(": ");
               Serial.println(duration);
+            }
+            
+            // Read trigger source if present
+            if (readLine(patchFile, buffer, sizeof(buffer)) && 
+                strncmp(buffer, "TRIGGER_SOURCE:", 15) == 0) {
+              int source = atoi(buffer + 15);
+              source = constrain(source, 0, 3);
+              envelopes[envIndex].triggerSource = source;
             }
             
             // Read points
@@ -1336,6 +1852,11 @@ void loadDefaultPatch() {
           }
         }
         
+        // Sync linked envelopes if in link mode
+        if (linkEnvelopesMode) {
+          syncLinkedEnvelopes();
+        }
+        
         Serial.println("Default patch loaded successfully");
       }
       
@@ -1360,6 +1881,9 @@ void processTouch() {
       return;
     } else if (currentState == LOAD_FILE_SELECT) {
       processFileListTouch(px, py);
+      return;
+    } else if (currentState == DELETE_CONFIRM) {
+      processFileListTouch(px, py); // Uses the same handler with special behavior
       return;
     }
     
@@ -1388,7 +1912,7 @@ void processTouch() {
           cursorPosition = 0;
           currentPatchName[0] = '\0';
           tft.fillScreen(BG_COLOR);
-          drawTabs(false); // Draw only save/load tabs
+          drawTabs();
           drawKeyboard();
         }
       } else if (tabIndex == 5) {
@@ -1403,10 +1927,24 @@ void processTouch() {
           selectedFileIndex = -1;
           fileScrollOffset = 0;
           tft.fillScreen(BG_COLOR);
-          drawTabs(false); // Draw only save/load tabs
+          drawTabs();
           drawFileList();
         }
       }
+      return;
+    }
+    
+    // Check if the "Link Env" checkbox was clicked
+    if (isInLinkCheckbox(px, py)) {
+      linkEnvelopesMode = !linkEnvelopesMode;
+      
+      // Sync envelope settings when linking is enabled
+      if (linkEnvelopesMode) {
+        syncLinkedEnvelopes();
+      }
+      
+      drawTabs(); // Update tab names
+      drawLinkCheckbox();
       return;
     }
     
@@ -1418,7 +1956,23 @@ void processTouch() {
         // Update position
         int newPos = constrain(px - TIME_SLIDER_X, 0, TIME_SLIDER_WIDTH);
         int newTime = map(newPos, 0, TIME_SLIDER_WIDTH, TIME_MIN_VALUE, TIME_MAX_VALUE);
+        
+        // Update this envelope's duration
         envelopes[currentEnvelope].totalDuration = newTime;
+        
+        // If in linked mode, sync envelopes in same group
+        if (linkEnvelopesMode) {
+          if (currentEnvelope == ENV1 || currentEnvelope == ENV2) {
+            // Sync ENV1 and ENV2
+            envelopes[ENV1].totalDuration = newTime;
+            envelopes[ENV2].totalDuration = newTime;
+          } else if (currentEnvelope == ENV3 || currentEnvelope == ENV4) {
+            // Sync ENV3 and ENV4
+            envelopes[ENV3].totalDuration = newTime;
+            envelopes[ENV4].totalDuration = newTime;
+          }
+        }
+        
         drawTimeSlider();
         return;  // Important: stop processing other touches
       }
@@ -1444,7 +1998,7 @@ void processTouch() {
           unsigned long now = millis();
           if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
             lastDrawTime = now;
-            drawUI();
+            drawUI(false);
           }
         } else if (holdingCurve) {
           for (auto &c : env.curves) {
@@ -1486,7 +2040,7 @@ void processTouch() {
               // Throttle redraw for better performance
               if (now - lastDrawTime >= MIN_REDRAW_INTERVAL) {
                 lastDrawTime = now;
-                drawUI();
+                drawUI(false);
               }
               break;
             }
@@ -1512,7 +2066,7 @@ void processTouch() {
             selectedPoint = pointIndex;
             holdingPoint = true;
             holdStartTime = now;
-            drawUI();
+            drawUI(false);
             return;
           }
           
@@ -1531,7 +2085,7 @@ void processTouch() {
             }
             holdingCurve = true;
             holdStartTime = now;
-            drawUI();
+            drawUI(false);
             return;
           }
           
