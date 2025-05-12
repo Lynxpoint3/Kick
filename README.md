@@ -32,10 +32,10 @@
 #define TIME_SLIDER_HEIGHT 20
 #define TIME_SLIDER_X 70
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
-#define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
-#define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
+#define TIME_SLIDER_HANDLE_WIDTH 29        // Width of oval handle
+#define TIME_SLIDER_HANDLE_HEIGHT 21       // Height of oval handle
 #define TIME_MIN_VALUE 50                  // 50ms minimum time
-#define TIME_MAX_VALUE 4200                // 4200ms maximum time
+#define TIME_MAX_VALUE 3500                // 3500ms maximum time
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
 
 // Keyboard Constants
