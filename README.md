@@ -70,22 +70,6 @@ enum UIState {
   ENVELOPE_EDIT, 
   SAVE_NAME_ENTRY, 
   LOAD_FILE_SELECT 
-}
-
-void updateOutputs() {
-  uint16_t dacValues[4];
-  
-  // Get current values from each envelope based on its triggered state
-  for (int i = 0; i < 4; i++) {
-    float value = envelopes[i].getCurrentValue();
-    dacValues[i] = value * 4095;
-  }
-  
-  // Send values to DAC
-  dac.setChannelValue(MCP4728_CHANNEL_A, dacValues[0]);
-  dac.setChannelValue(MCP4728_CHANNEL_B, dacValues[1]);
-  dac.setChannelValue(MCP4728_CHANNEL_C, dacValues[2]);
-  dac.setChannelValue(MCP4728_CHANNEL_D, dacValues[3]);
 };
 
 // Initialize hardware
@@ -437,7 +421,21 @@ void drawUI(bool fullRedraw) {
     drawEnvelope(currentEnvelope);
   }
 }
-
+void updateOutputs() {
+  uint16_t dacValues[4];
+  
+  // Get current values from each envelope based on its triggered state
+  for (int i = 0; i < 4; i++) {
+    float value = envelopes[i].getCurrentValue();
+    dacValues[i] = value * 4095;
+  }
+  
+  // Send values to DAC
+  dac.setChannelValue(MCP4728_CHANNEL_A, dacValues[0]);
+  dac.setChannelValue(MCP4728_CHANNEL_B, dacValues[1]);
+  dac.setChannelValue(MCP4728_CHANNEL_C, dacValues[2]);
+  dac.setChannelValue(MCP4728_CHANNEL_D, dacValues[3]);
+}
 void drawGrid() {
   for (int y = ENV_VIEW_TOP; y <= ENV_VIEW_TOP + ENV_VIEW_HEIGHT; y += ENV_VIEW_HEIGHT / 4) {
     tft.drawLine(0, y, SCREEN_WIDTH, y, GRID_COLOR);
@@ -681,7 +679,7 @@ void removeLineOverlaps() {
     } else {
       ++i;
     }
-  }void loadDefaultPatch() {
+  }  void loadDefaultPatch() {
   // Path to default patch file
   const char* defaultPatchPath = "patches/DEFAULT.kck";
   
