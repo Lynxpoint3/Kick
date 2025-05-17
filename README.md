@@ -10,6 +10,14 @@
 #define CS_PIN  7   // Touchscreen CS
 #define TIRQ_PIN 2  // Touchscreen IRQ
 
+// Trigger input pins
+#define BUTTON_PIN 3  // Push button on input 3
+#define TRIGGER_PIN_1 4  // Trigger for envelope 1 (PITCH)
+#define TRIGGER_PIN_2 5  // Trigger for envelope 2 (AMP)
+#define TRIGGER_PIN_3 6  // Trigger for envelope 3 (FILTER)
+#define TRIGGER_PIN_4 8  // Trigger for envelope 4 (NOISE)
+#define TRIGGER_PIN_ALL 9  // Trigger for all envelopes
+
 // Screen dimensions
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -32,10 +40,10 @@
 #define TIME_SLIDER_HEIGHT 20
 #define TIME_SLIDER_X 70
 #define TIME_SLIDER_Y (SCREEN_HEIGHT - 20) // Place slider near bottom
-#define TIME_SLIDER_HANDLE_WIDTH 29        // Width of oval handle
-#define TIME_SLIDER_HANDLE_HEIGHT 21       // Height of oval handle
+#define TIME_SLIDER_HANDLE_WIDTH 24        // Width of oval handle
+#define TIME_SLIDER_HANDLE_HEIGHT 16       // Height of oval handle
 #define TIME_MIN_VALUE 50                  // 50ms minimum time
-#define TIME_MAX_VALUE 3500                // 3500ms maximum time
+#define TIME_MAX_VALUE 4200                // 4200ms maximum time
 #define DOUBLE_CLICK_TIME 300 // Time in ms to detect a double-click
 
 // Keyboard Constants
@@ -62,6 +70,22 @@ enum UIState {
   ENVELOPE_EDIT, 
   SAVE_NAME_ENTRY, 
   LOAD_FILE_SELECT 
+}
+
+void updateOutputs() {
+  uint16_t dacValues[4];
+  
+  // Get current values from each envelope based on its triggered state
+  for (int i = 0; i < 4; i++) {
+    float value = envelopes[i].getCurrentValue();
+    dacValues[i] = value * 4095;
+  }
+  
+  // Send values to DAC
+  dac.setChannelValue(MCP4728_CHANNEL_A, dacValues[0]);
+  dac.setChannelValue(MCP4728_CHANNEL_B, dacValues[1]);
+  dac.setChannelValue(MCP4728_CHANNEL_C, dacValues[2]);
+  dac.setChannelValue(MCP4728_CHANNEL_D, dacValues[3]);
 };
 
 // Initialize hardware
@@ -91,6 +115,8 @@ public:
   std::vector<Point> points;
   std::vector<Curve> curves;
   int totalDuration = 1000;  // Duration in milliseconds
+  bool triggered = false;    // Flag to indicate if this envelope is triggered
+  unsigned long triggerTime = 0; // Time when envelope was triggered
 
   Envelope() {
     points.push_back({0, ENV_VIEW_HEIGHT * 3/4});
@@ -130,6 +156,42 @@ public:
     }
     return 1.0 - (points.back().y - ENV_VIEW_TOP) / (float)ENV_VIEW_HEIGHT;
   }
+
+  // Trigger the envelope to start playing
+  void trigger() {
+    triggered = true;
+    triggerTime = millis();
+  }
+
+  // Check if the envelope is still playing
+  bool isPlaying() {
+    if (!triggered) return false;
+    unsigned long now = millis();
+    unsigned long elapsed = now - triggerTime;
+    if (elapsed >= (unsigned long)totalDuration) {
+      triggered = false;
+      return false;
+    }
+    return true;
+  }
+
+  // Get the current output value based on triggered state
+  float getCurrentValue() {
+    if (!triggered) return 0.0f;
+    
+    unsigned long now = millis();
+    unsigned long elapsed = now - triggerTime;
+    
+    // If envelope cycle is complete, reset trigger state
+    if (elapsed >= (unsigned long)totalDuration) {
+      triggered = false;
+      return 0.0f;
+    }
+    
+    // Calculate phase (0.0 to 1.0) based on elapsed time
+    float phase = (float)elapsed / (float)totalDuration;
+    return getValue(phase);
+  }
 };
 
 // Global variables
@@ -157,6 +219,16 @@ int fileScrollOffset = 0;       // Scroll offset for file list
 bool needFullRedraw = true;
 #define MIN_REDRAW_INTERVAL 50  // Minimum time between redraws in ms
 
+// Trigger input state variables
+bool lastButtonState = HIGH;
+bool lastTrigger1State = HIGH;
+bool lastTrigger2State = HIGH;
+bool lastTrigger3State = HIGH;
+bool lastTrigger4State = HIGH;
+bool lastTriggerAllState = HIGH;
+unsigned long lastDebounceTime = 0;
+#define DEBOUNCE_DELAY 50  // Debounce time in ms
+
 // Function prototypes
 void drawUI(bool fullRedraw = true);
 void drawEnvelope(EnvelopeType envType);
@@ -167,6 +239,8 @@ int findNearbyPoint(int x, int y, int radius = POINT_RADIUS);
 int findNearbyLine(int x, int y);
 void processTouch();
 void updateOutputs();
+void checkTriggers();
+void triggerAllEnvelopes();
 void removeLineOverlaps();
 int stableX(int rawX);
 int stableY(int rawY);
@@ -180,6 +254,7 @@ void updateEnvelopePoint(int pointIndex);
 bool readLine(File &file, char* buffer, int maxLen);
 void printDirectory(File dir, int numTabs);
 void loadDefaultPatch();
+
 void setup() {
   Serial.begin(115200);
   delay(1000); // Give serial time to start
@@ -196,6 +271,14 @@ void setup() {
   if (!dac.begin()) {
     Serial.println("Failed to find MCP4728 chip");
   }
+  
+  // Initialize trigger input pins
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(TRIGGER_PIN_1, INPUT_PULLUP);
+  pinMode(TRIGGER_PIN_2, INPUT_PULLUP);
+  pinMode(TRIGGER_PIN_3, INPUT_PULLUP);
+  pinMode(TRIGGER_PIN_4, INPUT_PULLUP);
+  pinMode(TRIGGER_PIN_ALL, INPUT_PULLUP);
   
   // Clear display and show SD init message
   tft.fillScreen(BG_COLOR);
@@ -257,8 +340,90 @@ void setup() {
 
 void loop() {
   processTouch();
+  checkTriggers();
   updateOutputs();
   delay(10);
+}
+
+// Check for trigger inputs
+void checkTriggers() {
+  // Read current states
+  bool buttonState = digitalRead(BUTTON_PIN);
+  bool trigger1State = digitalRead(TRIGGER_PIN_1);
+  bool trigger2State = digitalRead(TRIGGER_PIN_2);
+  bool trigger3State = digitalRead(TRIGGER_PIN_3);
+  bool trigger4State = digitalRead(TRIGGER_PIN_4);
+  bool triggerAllState = digitalRead(TRIGGER_PIN_ALL);
+  
+  unsigned long currentTime = millis();
+  
+  // Check button (active LOW)
+  if (buttonState != lastButtonState) {
+    lastDebounceTime = currentTime;
+  }
+  
+  // Process button input after debounce
+  if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    // Button pressed (LOW)
+    if (buttonState == LOW && lastButtonState == HIGH) {
+      triggerAllEnvelopes();
+      Serial.println("All envelopes triggered by button");
+    }
+    lastButtonState = buttonState;
+  }
+  
+  // Check individual triggers (active LOW)
+  // Trigger 1 (PITCH)
+  if (trigger1State != lastTrigger1State && (currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (trigger1State == LOW && lastTrigger1State == HIGH) {
+      envelopes[PITCH].trigger();
+      Serial.println("PITCH envelope triggered");
+    }
+    lastTrigger1State = trigger1State;
+  }
+  
+  // Trigger 2 (AMP)
+  if (trigger2State != lastTrigger2State && (currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (trigger2State == LOW && lastTrigger2State == HIGH) {
+      envelopes[AMP].trigger();
+      Serial.println("AMP envelope triggered");
+    }
+    lastTrigger2State = trigger2State;
+  }
+  
+  // Trigger 3 (FILTER)
+  if (trigger3State != lastTrigger3State && (currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (trigger3State == LOW && lastTrigger3State == HIGH) {
+      envelopes[FILTER].trigger();
+      Serial.println("FILTER envelope triggered");
+    }
+    lastTrigger3State = trigger3State;
+  }
+  
+  // Trigger 4 (NOISE)
+  if (trigger4State != lastTrigger4State && (currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (trigger4State == LOW && lastTrigger4State == HIGH) {
+      envelopes[NOISE].trigger();
+      Serial.println("NOISE envelope triggered");
+    }
+    lastTrigger4State = trigger4State;
+  }
+  
+  // Trigger ALL
+  if (triggerAllState != lastTriggerAllState && (currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (triggerAllState == LOW && lastTriggerAllState == HIGH) {
+      triggerAllEnvelopes();
+      Serial.println("All envelopes triggered by input");
+    }
+    lastTriggerAllState = triggerAllState;
+  }
+}
+
+// Trigger all envelopes at once
+void triggerAllEnvelopes() {
+  for (int i = 0; i < 4; i++) {
+    envelopes[i].trigger();
+  }
 }
 
 void drawUI(bool fullRedraw) {
@@ -516,747 +681,7 @@ void removeLineOverlaps() {
     } else {
       ++i;
     }
-  }
-}
-
-void updateOutputs() {
-  float values[4];
-  for (int i = 0; i < 4; i++) {
-    unsigned long now = millis();
-    float phase = (now % envelopes[i].totalDuration) / (float)envelopes[i].totalDuration;
-    values[i] = envelopes[i].getValue(phase);
-  }
-  uint16_t dacValues[4];
-  for (int i = 0; i < 4; i++) {
-    dacValues[i] = values[i] * 4095;
-  }
-  dac.setChannelValue(MCP4728_CHANNEL_A, dacValues[0]);
-  dac.setChannelValue(MCP4728_CHANNEL_B, dacValues[1]);
-  dac.setChannelValue(MCP4728_CHANNEL_C, dacValues[2]);
-  dac.setChannelValue(MCP4728_CHANNEL_D, dacValues[3]);
-}
-
-int stableX(int rawX) {
-  jitterBufferX.push_back(rawX);
-  if (jitterBufferX.size() > JITTER_BUFFER_SIZE) jitterBufferX.erase(jitterBufferX.begin());
-  int sum = 0;
-  for (int val : jitterBufferX) sum += val;
-  return sum / jitterBufferX.size();
-}
-
-int stableY(int rawY) {
-  jitterBufferY.push_back(rawY);
-  if (jitterBufferY.size() > JITTER_BUFFER_SIZE) jitterBufferY.erase(jitterBufferY.begin());
-  int sum = 0;
-  for (int val : jitterBufferY) sum += val;
-  return sum / jitterBufferY.size();
-}
-
-void updateEnvelopePoint(int pointIndex) {
-  // Only redraw if enough time has passed since last redraw
-  unsigned long now = millis();
-  if (now - lastDrawTime < MIN_REDRAW_INTERVAL) return;
-  lastDrawTime = now;
-  
-  Envelope &env = envelopes[currentEnvelope];
-  uint16_t envColor = ENV_COLORS[currentEnvelope];
-  
-  // Erase and redraw lines connected to this point
-  if (pointIndex > 0) {
-    // Erase and redraw the line from the previous point
-    Point prev = env.points[pointIndex-1];
-    Point curr = env.points[pointIndex];
-    
-    // First erase by drawing with background color (simple approach)
-    int x1 = max(0, min(prev.x, curr.x) - POINT_RADIUS * 2);
-    int y1 = max(ENV_VIEW_TOP, min(prev.y, curr.y) - POINT_RADIUS * 2);
-    int x2 = min(SCREEN_WIDTH, max(prev.x, curr.x) + POINT_RADIUS * 2);
-    int y2 = min(ENV_VIEW_TOP + ENV_VIEW_HEIGHT, max(prev.y, curr.y) + POINT_RADIUS * 2);
-    
-    tft.fillRect(x1, y1, x2-x1, y2-y1, BG_COLOR);
-    
-    // Then redraw grid in that area
-    // (simplified - for a full solution you'd redraw grid lines more precisely)
-    
-    // Then redraw the line
-    bool hasCurve = false;
-    for (auto &c : env.curves) {
-      if (c.index == pointIndex - 1) {
-        hasCurve = true;
-        // Draw curve code here (omitted for brevity)
-        break;
-      }
-    }
-    
-    if (!hasCurve) {
-      tft.drawLine(prev.x, prev.y, curr.x, curr.y, envColor);
-    }
-  }
-  
-  if (pointIndex < static_cast<int>(env.points.size()) - 1) {
-    // Similar code for the next line
-    // Omitted for brevity
-  }
-  
-  // Redraw the point itself
-  tft.fillCircle(env.points[pointIndex].x, env.points[pointIndex].y, POINT_RADIUS, SELECTED_POINT_COLOR);
-  tft.drawCircle(env.points[pointIndex].x, env.points[pointIndex].y, POINT_RADIUS, envColor);
-}
-
-void drawKeyboard() {
-  // Draw keyboard background
-  tft.fillRect(0, KEYBOARD_TOP, SCREEN_WIDTH, KEYBOARD_HEIGHT, GRID_COLOR);
-  tft.drawRect(0, KEYBOARD_TOP, SCREEN_WIDTH, KEYBOARD_HEIGHT, 0xFFFF);
-  
-  // Draw current filename entry box
-  tft.fillRect(10, KEYBOARD_TOP + 10, SCREEN_WIDTH - 20, 25, BG_COLOR);
-  tft.drawRect(10, KEYBOARD_TOP + 10, SCREEN_WIDTH - 20, 25, 0xFFFF);
-  tft.setTextColor(TEXT_COLOR);
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextSize(2);
-  tft.drawString(currentPatchName, 15, KEYBOARD_TOP + 25);
-  
-  // Draw cursor
-  int cursorX = 15;
-  for (int i = 0; i < cursorPosition; i++) {
-    cursorX += tft.textWidth(currentPatchName[i]);
-  }
-  tft.drawFastVLine(cursorX, KEYBOARD_TOP + 15, 20, 0xFFFF);
-  
-  // Calculate vertical positions with even spacing
-  int startY = KEYBOARD_TOP + 45;
-  int row1Y = startY;
-  int row2Y = startY + KEY_HEIGHT + KEY_SPACING;
-  int row3Y = row2Y + KEY_HEIGHT + KEY_SPACING;
-  int row4Y = row3Y + KEY_HEIGHT + KEY_SPACING;
-  int row5Y = row4Y + KEY_HEIGHT + KEY_SPACING;
-  
-  // Keys row 1 - numbers
-  tft.setTextSize(2);  // Larger text (was 1)
-  for (int i = 0; i < 10; i++) {
-    tft.fillRoundRect(i * KEY_WIDTH + 2, row1Y, KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(String(i), i * KEY_WIDTH + KEY_WIDTH/2, row1Y + KEY_HEIGHT/2);
-  }
-  
-  // Keys row 2 - QWERTYUIOP
-  const char* row1_keys = "QWERTYUIOP";
-  for (int i = 0; i < 10; i++) {
-    tft.fillRoundRect(i * KEY_WIDTH + 2, row2Y, KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-    tft.drawString(String(row1_keys[i]), i * KEY_WIDTH + KEY_WIDTH/2, row2Y + KEY_HEIGHT/2);
-  }
-  
-  // Keys row 3 - ASDFGHJKL
-  const char* row2_keys = "ASDFGHJKL";
-  for (int i = 0; i < 9; i++) {
-    tft.fillRoundRect((i + 0.5) * KEY_WIDTH + 2, row3Y, KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-    tft.drawString(String(row2_keys[i]), (i + 0.5) * KEY_WIDTH + KEY_WIDTH/2, row3Y + KEY_HEIGHT/2);
-  }
-  
-  // Keys row 4 - ZXCVBNM
-  const char* row3_keys = "ZXCVBNM";
-  for (int i = 0; i < 7; i++) {
-    tft.fillRoundRect((i + 1.5) * KEY_WIDTH + 2, row4Y, KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-    tft.drawString(String(row3_keys[i]), (i + 1.5) * KEY_WIDTH + KEY_WIDTH/2, row4Y + KEY_HEIGHT/2);
-  }
-  
-  // Special keys - evenly spaced
-  tft.fillRoundRect(1 * KEY_WIDTH + 2, row5Y, 2 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-  tft.drawString("SPACE", 2 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-  
-  // Backspace key
-  tft.fillRoundRect(3.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-  tft.drawString("DEL", 4.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-  
-  // Clear key
-  tft.fillRoundRect(5.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x8410);
-  tft.drawString("CLEAR", 6.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-  
-  // Save key
-  tft.fillRoundRect(7.5 * KEY_WIDTH + 2, row5Y, 1.5 * KEY_WIDTH - 4, KEY_HEIGHT, 4, 0x04A0);
-  tft.drawString("SAVE", 8.25 * KEY_WIDTH, row5Y + KEY_HEIGHT/2);
-}
-
-void processKeyboardTouch(int px, int py) {
-  // Debounce touches
-  unsigned long now = millis();
-  if (now - lastKeyboardTouchTime < KEYBOARD_DEBOUNCE_TIME) {
-    return;  // Ignore too-rapid touches
-  }
-  lastKeyboardTouchTime = now;
-  
-  // Check if touch is in the keyboard area
-  if (py < KEYBOARD_TOP) return;
-  
-  // Calculate vertical positions with even spacing
-  int startY = KEYBOARD_TOP + 45;
-  int row1Y = startY;
-  int row2Y = startY + KEY_HEIGHT + KEY_SPACING;
-  int row3Y = row2Y + KEY_HEIGHT + KEY_SPACING;
-  int row4Y = row3Y + KEY_HEIGHT + KEY_SPACING;
-  int row5Y = row4Y + KEY_HEIGHT + KEY_SPACING;
-  
-  // Check for key presses - row 1 (numbers)
-  if (py >= row1Y && py < row1Y + KEY_HEIGHT) {
-    int keyIndex = px / KEY_WIDTH;
-    if (keyIndex >= 0 && keyIndex < 10 && cursorPosition < 19) {
-      currentPatchName[cursorPosition++] = '0' + keyIndex;
-      currentPatchName[cursorPosition] = '\0';
-      drawKeyboard();
-    }
-  }
-  // Row 2 - QWERTYUIOP
-  else if (py >= row2Y && py < row2Y + KEY_HEIGHT) {
-    int keyIndex = px / KEY_WIDTH;
-    if (keyIndex >= 0 && keyIndex < 10 && cursorPosition < 19) {
-      currentPatchName[cursorPosition++] = "QWERTYUIOP"[keyIndex];
-      currentPatchName[cursorPosition] = '\0';
-      drawKeyboard();
-    }
-  }
-  // Row 3 - ASDFGHJKL
-  else if (py >= row3Y && py < row3Y + KEY_HEIGHT) {
-    int keyIndex = (px - KEY_WIDTH/2) / KEY_WIDTH;
-    if (keyIndex >= 0 && keyIndex < 9 && cursorPosition < 19) {
-      currentPatchName[cursorPosition++] = "ASDFGHJKL"[keyIndex];
-      currentPatchName[cursorPosition] = '\0';
-      drawKeyboard();
-    }
-  }
-  // Row 4 - ZXCVBNM
-  else if (py >= row4Y && py < row4Y + KEY_HEIGHT) {
-    int keyIndex = (px - KEY_WIDTH*1.5) / KEY_WIDTH;
-    if (keyIndex >= 0 && keyIndex < 7 && cursorPosition < 19) {
-      currentPatchName[cursorPosition++] = "ZXCVBNM"[keyIndex];
-      currentPatchName[cursorPosition] = '\0';
-      drawKeyboard();
-    }
-  }
-  // Special keys
-  else if (py >= row5Y && py < row5Y + KEY_HEIGHT) {
-    // Space key
-    if (px >= 1 * KEY_WIDTH && px < 3 * KEY_WIDTH && cursorPosition < 19) {
-      currentPatchName[cursorPosition++] = ' ';
-      currentPatchName[cursorPosition] = '\0';
-      drawKeyboard();
-    }
-    // Backspace key
-    else if (px >= 3.5 * KEY_WIDTH && px < 5 * KEY_WIDTH) {
-      if (cursorPosition > 0) {
-        cursorPosition--;
-        currentPatchName[cursorPosition] = '\0';
-        drawKeyboard();
-      }
-    }
-    // Clear key
-    else if (px >= 5.5 * KEY_WIDTH && px < 7 * KEY_WIDTH) {
-      cursorPosition = 0;
-      currentPatchName[0] = '\0';
-      drawKeyboard();
-    }
-    // Save key
-    else if (px >= 7.5 * KEY_WIDTH && px < 9 * KEY_WIDTH) {
-      if (strlen(currentPatchName) > 0) {
-        saveCurrentPatch();
-        currentState = ENVELOPE_EDIT;
-        drawUI();
-      }
-    }
-  }
-}
-
-void drawFileList() {
-  Serial.println("Drawing file list");
-  
-  // Draw file list background
-  tft.fillRect(0, TOP_BAR_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_HEIGHT, BG_COLOR);
-  tft.drawRect(0, TOP_BAR_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - TOP_BAR_HEIGHT, GRID_COLOR);
-  
-  // Draw instructions
-  tft.setTextColor(TEXT_COLOR);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextSize(1);
-  tft.drawString("SELECT A PATCH TO LOAD", SCREEN_WIDTH/2, TOP_BAR_HEIGHT + 15);
-  
-  // Make sure patches directory exists
-  if (!SD.exists("patches")) {
-    Serial.println("Patches directory doesn't exist");
-    SD.mkdir("patches");
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("NO PATCHES FOUND", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    return;
-  }
-  
-  // Open patches directory
-  Serial.println("Opening patches directory");
-  File patchDir = SD.open("patches");
-  
-  if (!patchDir) {
-    Serial.println("Failed to open patches directory");
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("ERROR OPENING PATCHES", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    return;
-  }
-  
-  if (!patchDir.isDirectory()) {
-    Serial.println("Patches is not a directory");
-    patchDir.close();
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("PATCHES IS NOT A DIRECTORY", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    return;
-  }
-  
-  // Count patches
-  Serial.println("Counting patches");
-  int patchCount = 0;
-  File entry;
-  
-  while (true) {
-    entry = patchDir.openNextFile();
-    if (!entry) {
-      break;
-    }
-    
-    const char* entryName = entry.name();
-    Serial.print("Found file: ");
-    Serial.println(entryName);
-    
-    int nameLen = strlen(entryName);
-    if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
-      patchCount++;
-    }
-    entry.close();
-  }
-  
-  Serial.print("Found ");
-  Serial.print(patchCount);
-  Serial.println(" patches");
-  
-  if (patchCount == 0) {
-    patchDir.close();
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("NO PATCHES FOUND", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    return;
-  }
-  
-  // Draw files
-  patchDir.rewindDirectory();
-  int y = TOP_BAR_HEIGHT + 40;
-  int fileCount = 0;
-  int visibleFiles = 0;
-  
-  // Skip files according to scroll offset
-  for (int i = 0; i < fileScrollOffset; i++) {
-    entry = patchDir.openNextFile();
-    if (!entry) break;
-    
-    if (!entry.isDirectory()) {
-      const char* entryName = entry.name();
-      int nameLen = strlen(entryName);
-      if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
-        fileCount++;
-      }
-    }
-    entry.close();
-  }
-  
-  // Draw visible files
-  while (visibleFiles < 8) { // Show at most 8 files
-    entry = patchDir.openNextFile();
-    if (!entry) break;
-    
-    if (!entry.isDirectory()) {
-      const char* entryName = entry.name();
-      int nameLen = strlen(entryName);
-      if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
-        // Get just the filename without extension
-        char filename[20];
-        strncpy(filename, entryName, nameLen - 4);
-        filename[nameLen - 4] = '\0';
-        
-        // Highlight selected file
-        if (fileCount == selectedFileIndex) {
-          tft.fillRect(10, y - 5, SCREEN_WIDTH - 20, 25, 0x5ACB);
-          tft.setTextColor(0x0000);
-        } else {
-          tft.setTextColor(TEXT_COLOR);
-        }
-        
-        tft.setTextDatum(ML_DATUM);
-        tft.drawString(filename, 20, y + 8);
-        
-        y += 30;
-        fileCount++;
-        visibleFiles++;
-      }
-    }
-    entry.close();
-  }
-  
-  patchDir.close();
-  
-  // Draw up/down arrows if needed
-  if (fileScrollOffset > 0) {
-    // Draw up arrow
-    tft.fillTriangle(SCREEN_WIDTH - 20, TOP_BAR_HEIGHT + 50, 
-                    SCREEN_WIDTH - 10, TOP_BAR_HEIGHT + 35,
-                    SCREEN_WIDTH - 30, TOP_BAR_HEIGHT + 35,
-                    0xFFFF);
-  }
-  
-  if (patchCount > fileScrollOffset + visibleFiles) {
-    // Draw down arrow
-    tft.fillTriangle(SCREEN_WIDTH - 20, SCREEN_HEIGHT - 50, 
-                    SCREEN_WIDTH - 10, SCREEN_HEIGHT - 35,
-                    SCREEN_WIDTH - 30, SCREEN_HEIGHT - 35,
-                    0xFFFF);
-  }
-  
-  // Draw load button if we have files
-  if (patchCount > 0) {
-    tft.fillRoundRect(SCREEN_WIDTH/2 - 40, SCREEN_HEIGHT - 40, 80, 30, 5, 0x04A0);
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("LOAD", SCREEN_WIDTH/2, SCREEN_HEIGHT - 25);
-  }
-}
-
-void processFileListTouch(int px, int py) {
-  // Handle scrolling
-  if (px > SCREEN_WIDTH - 40 && py < TOP_BAR_HEIGHT + 60 && fileScrollOffset > 0) {
-    // Scroll up
-    fileScrollOffset--;
-    drawFileList();
-    return;
-  }
-  
-  if (px > SCREEN_WIDTH - 40 && py > SCREEN_HEIGHT - 60) {
-    // Scroll down
-    fileScrollOffset++;
-    drawFileList();
-    return;
-  }
-  
-  // Handle file selection
-  if (py > TOP_BAR_HEIGHT + 40 && py < SCREEN_HEIGHT - 50) {
-    int fileIndex = fileScrollOffset + ((py - (TOP_BAR_HEIGHT + 40)) / 30);
-    
-    // Check if this is a valid file index
-    bool validIndex = false;
-    int count = 0;
-    
-    if (SD.exists("patches")) {
-      patchDir = SD.open("patches");
-      File entry;
-      
-      while (true) {
-        entry = patchDir.openNextFile();
-        if (!entry) break;
-        
-        if (!entry.isDirectory() && String(entry.name()).endsWith(".kck")) {
-          if (count == fileIndex) {
-            validIndex = true;
-            Serial.print("Selected file index: ");
-            Serial.println(fileIndex);
-            break;
-          }
-          count++;
-        }
-        entry.close();
-      }
-      patchDir.close();
-    }
-    
-    if (validIndex) {
-      selectedFileIndex = fileIndex;
-      drawFileList();
-      return; // Don't process load button in the same touch
-    }
-  }
-  
-  // Handle load button - only if we have a valid selection
-  if (py > SCREEN_HEIGHT - 40 && py < SCREEN_HEIGHT - 10 &&
-      px > SCREEN_WIDTH/2 - 40 && px < SCREEN_WIDTH/2 + 40 && 
-      selectedFileIndex >= 0) {
-    Serial.print("Loading selected patch: ");
-    Serial.println(selectedFileIndex);
-    loadSelectedPatch();
-    currentState = ENVELOPE_EDIT;
-    drawUI();
-  }
-}
-
-void saveCurrentPatch() {
-  Serial.println("Saving patch...");
-  
-  // Create patches directory if needed
-  if (!SD.exists("patches")) {
-    SD.mkdir("patches");
-  }
-  
-  // Construct filename - no leading slash
-  char filename[50] = "patches/";
-  strcat(filename, currentPatchName);
-  strcat(filename, ".kck");
-  
-  Serial.print("Saving to filename: ");
-  Serial.println(filename);
-  
-  // Remove existing file if it exists
-  if (SD.exists(filename)) {
-    Serial.println("Removing existing file");
-    SD.remove(filename);
-  }
-  
-  // Open file for writing
-  File patchFile = SD.open(filename, FILE_WRITE);
-  if (patchFile) {
-    Serial.println("File opened for writing");
-    
-    // Write header
-    patchFile.println("KICK_PATCH");
-    patchFile.println("VERSION:1.0");
-    
-    // Save each envelope
-    for (int e = 0; e < 4; e++) {
-      patchFile.print("ENVELOPE:");
-      patchFile.println(e);
-      patchFile.print("DURATION:");
-      patchFile.println(envelopes[e].totalDuration);
-      
-      // Save points
-      patchFile.print("POINTS:");
-      patchFile.println(envelopes[e].points.size());
-      for (size_t i = 0; i < envelopes[e].points.size(); i++) {
-        patchFile.print(envelopes[e].points[i].x);
-        patchFile.print(",");
-        patchFile.println(envelopes[e].points[i].y);
-      }
-      
-      // Save curves
-      patchFile.print("CURVES:");
-      patchFile.println(envelopes[e].curves.size());
-      for (size_t i = 0; i < envelopes[e].curves.size(); i++) {
-        patchFile.print(envelopes[e].curves[i].index);
-        patchFile.print(",");
-        patchFile.println(envelopes[e].curves[i].offset);
-      }
-    }
-    
-    patchFile.close();
-    Serial.println("File closed after writing");
-    
-    // Verify file exists
-    if (SD.exists(filename)) {
-      Serial.println("Verified file exists after saving");
-    } else {
-      Serial.println("ERROR: File does not exist after saving!");
-    }
-    
-    // Indicate success
-    tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, 0x04A0);
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextSize(1);
-    tft.drawString("PATCH SAVED", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
-    delay(1000);
-  } else {
-    Serial.println("Failed to open file for writing!");
-    // Show error message
-    tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, TFT_RED);
-    tft.setTextColor(TEXT_COLOR);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextSize(1);
-    tft.drawString("SAVE ERROR", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
-    delay(1000);
-  }
-}
-
-void loadSelectedPatch() {
-  if (selectedFileIndex < 0) return;
-  
-  Serial.print("Starting load of patch index: ");
-  Serial.println(selectedFileIndex);
-  
-  // Find the selected file by index
-  if (SD.exists("patches")) {
-    patchDir = SD.open("patches");
-    File entry;
-    int fileCount = 0;
-    char filename[50] = "";
-    
-    while (true) {
-      entry = patchDir.openNextFile();
-      if (!entry) break;
-      
-      if (!entry.isDirectory()) {
-        const char* entryName = entry.name();
-        int nameLen = strlen(entryName);
-        if (nameLen > 4 && strcmp(entryName + nameLen - 4, ".kck") == 0) {
-          if (fileCount == selectedFileIndex) {
-            strcpy(filename, entryName);
-            Serial.print("Found file: ");
-            Serial.println(filename);
-            entry.close();
-            break;
-          }
-          fileCount++;
-        }
-      }
-      entry.close();
-    }
-    patchDir.close();
-    
-    if (strlen(filename) > 0) {
-      // Open the selected file
-      char fullPath[100] = "patches/";
-      strcat(fullPath, filename);
-      Serial.print("Opening file: ");
-      Serial.println(fullPath);
-      
-      File patchFile = SD.open(fullPath);
-      
-      if (patchFile) {
-        // Read header - line by line processing
-        char buffer[50];
-        if (readLine(patchFile, buffer, sizeof(buffer)) && 
-            strcmp(buffer, "KICK_PATCH") == 0) {
-          Serial.println("Valid patch file found");
-          
-          // Skip version line
-          readLine(patchFile, buffer, sizeof(buffer));
-          
-          // Read envelopes
-          while (patchFile.available()) {
-            if (!readLine(patchFile, buffer, sizeof(buffer))) {
-              break;
-            }
-            
-            // Check for envelope section
-            if (strncmp(buffer, "ENVELOPE:", 9) == 0) {
-              int envIndex = atoi(buffer + 9);
-              
-              // Read duration
-              if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                  strncmp(buffer, "DURATION:", 9) == 0) {
-                int duration = atoi(buffer + 9);
-                // Make sure the loaded duration is within our valid range
-                duration = constrain(duration, TIME_MIN_VALUE, TIME_MAX_VALUE);
-                envelopes[envIndex].totalDuration = duration;
-                Serial.print("Loaded duration for env ");
-                Serial.print(envIndex);
-                Serial.print(": ");
-                Serial.println(duration);
-              }
-              
-              // Read points
-              if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                  strncmp(buffer, "POINTS:", 7) == 0) {
-                int numPoints = atoi(buffer + 7);
-                envelopes[envIndex].points.clear();
-                
-                for (int i = 0; i < numPoints; i++) {
-                  if (readLine(patchFile, buffer, sizeof(buffer))) {
-                    char* comma = strchr(buffer, ',');
-                    if (comma) {
-                      *comma = 0; // Split string at comma
-                      int x = atoi(buffer);
-                      int y = atoi(comma + 1);
-                      envelopes[envIndex].points.push_back({x, y});
-                    }
-                  }
-                }
-                Serial.print("Loaded points for env ");
-                Serial.print(envIndex);
-                Serial.print(": ");
-                Serial.println(envelopes[envIndex].points.size());
-              }
-              
-              // Read curves
-              if (readLine(patchFile, buffer, sizeof(buffer)) && 
-                  strncmp(buffer, "CURVES:", 7) == 0) {
-                int numCurves = atoi(buffer + 7);
-                envelopes[envIndex].curves.clear();
-                
-                for (int i = 0; i < numCurves; i++) {
-                  if (readLine(patchFile, buffer, sizeof(buffer))) {
-                    char* comma = strchr(buffer, ',');
-                    if (comma) {
-                      *comma = 0; // Split string at comma
-                      int index = atoi(buffer);
-                      int offset = atoi(comma + 1);
-                      envelopes[envIndex].curves.push_back({index, offset});
-                    }
-                  }
-                }
-              }
-            }
-          }
-          
-          Serial.println("Patch loaded successfully");
-          
-          // Indicate success
-          tft.fillRect(SCREEN_WIDTH/4, SCREEN_HEIGHT/3, SCREEN_WIDTH/2, 40, 0x04A0);
-          tft.setTextColor(TEXT_COLOR);
-          tft.setTextDatum(MC_DATUM);
-          tft.setTextSize(1);
-          tft.drawString("PATCH LOADED", SCREEN_WIDTH/2, SCREEN_HEIGHT/3 + 20);
-          delay(1000);
-        }
-        
-        patchFile.close();
-      }
-    }
-  }
-}
-
-// Helper function to read a line from a file into a buffer
-bool readLine(File &file, char* buffer, int maxLen) {
-  int i = 0;
-  while (file.available() && i < maxLen - 1) {
-    char c = file.read();
-    if (c == '\n') {
-      break;
-    }
-    if (c == '\r') {
-      continue; // Skip carriage returns
-    }
-    buffer[i++] = c;
-  }
-  buffer[i] = 0; // Null terminate
-  return i > 0;  // Return true if we read anything
-}
-
-void printDirectory(File dir, int numTabs) {
-  while (true) {
-    File entry = dir.openNextFile();
-    if (!entry) {
-      break; // No more files
-    }
-    
-    for (int i = 0; i < numTabs; i++) {
-      Serial.print('\t');
-    }
-    
-    Serial.print(entry.name());
-    
-    if (entry.isDirectory()) {
-      Serial.println("/");
-      printDirectory(entry, numTabs + 1);
-    } else {
-      // Files have sizes, directories do not
-      Serial.print("\t\t");
-      Serial.println(entry.size(), DEC);
-    }
-    entry.close();
-  }
-}
-
-void loadDefaultPatch() {
+  }void loadDefaultPatch() {
   // Path to default patch file
   const char* defaultPatchPath = "patches/DEFAULT.kck";
   
